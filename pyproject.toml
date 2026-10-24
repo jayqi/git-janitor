@@ -1,0 +1,72 @@
+[project]
+name = "git-janitor"
+version = "0.1.0"
+description = "Gather evidence on whether local git branches and worktrees are merged on GitHub, and clean up the ones that are"
+readme = "README.md"
+authors = [
+    { name = "Jay Qi", email = "jayqi@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+  "typer",
+]
+
+[project.scripts]
+git-janitor = "git_janitor.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff",
+    { include-group = "tests" },
+    { include-group = "typecheck" },
+]
+tests = [
+    "coverage",
+    "pytest-cov",
+    "pytest",
+]
+typecheck = [
+    "ty",
+]
+
+## TOOLS
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.ruff]
+line-length = 99
+src = ["src/git_janitor/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = [
+  "E", # Pycodestyle
+  "F", # Pyflakes
+  "I", # isort
+]
+unfixable = ["F"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["git_janitor"]
+force-sort-within-sections = true
+
+[tool.ty.src]
+include = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--cov=git_janitor --cov-report=term --cov-report=html --cov-report=xml"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["git_janitor"]
+
+[tool.coverage.paths]
+git_janitor = [
+  "src/git_janitor/",
+  "*/site-packages/git_janitor/"
+]
