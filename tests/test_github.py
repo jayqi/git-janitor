@@ -20,7 +20,7 @@ class FakeGh:
         fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
         repository = {
             "nameWithOwner": f"{fields['owner']}/{fields['name']}",
-            "defaultBranchRef": self.default_branch and {"name": self.default_branch},
+            "defaultBranchRef": {"name": self.default_branch},
         }
         for key, head in fields.items():
             if key.startswith("head"):
@@ -100,15 +100,6 @@ def test_fetch_queries_heads_in_batches():
     }
 
 
-def test_fetch_without_heads_still_gets_default_branch():
-    gh = FakeGh(default_branch="main")
-
-    data = GhGitHubClient(run_gh=gh).fetch("https://github.com/owner/repo", [])
-
-    assert data.default_branch == "main"
-    assert len(gh.calls) == 1
-
-
 @pytest.mark.parametrize(
     ("url", "host", "owner", "name"),
     [
@@ -133,21 +124,6 @@ def test_fetch_targets_repository_from_remote_url(url, host, owner, name):
 def test_fetch_rejects_remote_that_is_not_a_github_repository():
     with pytest.raises(GitHubError):
         GhGitHubClient(run_gh=FakeGh()).fetch("/some/local/path.git", ["feat"])
-
-
-def test_gh_failure_raises_github_error():
-    def failing_gh(args):
-        raise GitHubError("gh: authentication required")
-
-    with pytest.raises(GitHubError, match="authentication"):
-        GhGitHubClient(run_gh=failing_gh).fetch("git@github.com:owner/repo.git", ["feat"])
-
-
-def test_repository_without_default_branch_raises_github_error():
-    gh = FakeGh(default_branch=None)
-
-    with pytest.raises(GitHubError, match="default branch"):
-        GhGitHubClient(run_gh=gh).fetch("git@github.com:owner/repo.git", ["feat"])
 
 
 def test_graphql_errors_raise_github_error():

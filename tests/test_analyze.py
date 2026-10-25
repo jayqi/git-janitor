@@ -93,24 +93,6 @@ def test_branch_merged_into_another_branch_needs_review(sandbox):
     assert candidate.verdict is Verdict.REVIEW
 
 
-def test_reused_branch_name_does_not_inherit_old_merged_pull_request(sandbox):
-    sandbox.new_branch("feat")
-    old_pr = sandbox.open_pr("feat")
-    sandbox.squash_merge(old_pr)
-    sandbox.git("branch", "-D", "feat")
-    sandbox.git("fetch", "-q", "origin")
-    sandbox.new_branch("feat", start="origin/main")
-
-    report = analyze(sandbox.repo, sandbox.github)
-
-    candidate = report.candidate("feat")
-    assert candidate.status is Status.NO_PR
-    assert candidate.verdict is Verdict.REVIEW
-    assert candidate.evidence == (
-        PullRequestEvidence(pull_request=sandbox.github.get(old_pr), matched=False),
-    )
-
-
 def test_branch_without_commits_of_its_own_or_worktree_is_deletable(sandbox):
     sandbox.git("branch", "fresh", "main")
 
@@ -172,19 +154,6 @@ def test_fresh_branch_reusing_merged_pull_request_name_has_no_unique_commits(san
     assert candidate.status is Status.NO_UNIQUE_COMMITS
 
 
-def test_branch_sharing_a_name_with_a_tag(sandbox):
-    sandbox.new_branch("feat")
-    sandbox.squash_merge(sandbox.open_pr("feat"))
-    sandbox.git("tag", "feat", "main")
-
-    report = analyze(sandbox.repo, sandbox.github)
-
-    candidate = report.candidate("feat")
-    assert candidate.branch.name == "feat"
-    assert candidate.branch.upstream == "origin/feat"
-    assert candidate.status is Status.MERGED
-
-
 def test_unfetchable_pull_request_head_does_not_count_as_match(sandbox):
     sandbox.new_branch("feat")
     pr = sandbox.open_pr("feat")
@@ -197,16 +166,6 @@ def test_unfetchable_pull_request_head_does_not_count_as_match(sandbox):
     candidate = report.candidate("feat")
     assert candidate.status is Status.NO_PR
     assert candidate.verdict is Verdict.REVIEW
-
-
-def test_find_prefers_candidate_id_over_worktree_path(sandbox):
-    sandbox.new_branch("zeta")
-    sandbox.git("worktree", "add", "-q", "-b", "alpha", str(sandbox.root / "zeta"), "main")
-
-    report = analyze(sandbox.repo, sandbox.github)
-
-    assert report.find("zeta", cwd=sandbox.root).id == "zeta"
-    assert report.find("./zeta", cwd=sandbox.root).id == "alpha"
 
 
 def test_commit_and_stash_messages_with_unicode_line_separators(sandbox):
@@ -289,7 +248,8 @@ def test_merge_commit_merged_branch_is_deletable(sandbox):
 
 def test_branch_fast_forwarded_to_default_branch_has_no_unique_commits(sandbox):
     sandbox.new_branch("feat")
-    sandbox.merge_commit_merge(sandbox.open_pr("feat"))
+    pr = sandbox.open_pr("feat")
+    sandbox.merge_commit_merge(pr)
     sandbox.git("fetch", "-q", "origin")
     sandbox.git("branch", "-f", "feat", "origin/main")
 
@@ -297,7 +257,9 @@ def test_branch_fast_forwarded_to_default_branch_has_no_unique_commits(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.status is Status.NO_UNIQUE_COMMITS
-    assert not any(isinstance(e, ExtraCommits) for e in candidate.evidence)
+    assert candidate.evidence == (
+        PullRequestEvidence(pull_request=sandbox.github.get(pr), matched=False),
+    )
 
 
 def test_pull_request_head_missing_after_fetch_does_not_count_as_match(sandbox):

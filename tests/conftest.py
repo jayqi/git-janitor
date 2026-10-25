@@ -119,6 +119,14 @@ class Sandbox:
         self.git("worktree", "add", "-q", "--detach", str(path), commit)
         return path
 
+    def merged_worktree(self, name: str = "feat") -> tuple[Path, int]:
+        """Create a branch in a worktree with one commit, and squash-merge its pull request."""
+        path = self.add_worktree(name, create=True)
+        self.commit(cwd=path)
+        pr = self.open_pr(name)
+        self.squash_merge(pr)
+        return path, pr
+
     def push(self, branch: str) -> None:
         self.git("push", "-q", "-u", "origin", branch)
 

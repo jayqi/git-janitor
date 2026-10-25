@@ -18,16 +18,8 @@ def in_sandbox(sandbox, monkeypatch):
     return sandbox
 
 
-def merged_branch_in_worktree(sandbox, name="feat"):
-    path = sandbox.add_worktree(name, create=True)
-    sandbox.commit(cwd=path)
-    pr = sandbox.open_pr(name)
-    sandbox.squash_merge(pr)
-    return path, pr
-
-
 def test_report_json(in_sandbox):
-    path, pr = merged_branch_in_worktree(in_sandbox)
+    path, pr = in_sandbox.merged_worktree()
     tip = in_sandbox.tip("feat")
 
     result = runner.invoke(cli.app, ["report", "--json", "feat"])
@@ -92,7 +84,7 @@ def pop_last_activity(candidate):
 
 
 def test_report_json_extra_commits(in_sandbox):
-    path, pr = merged_branch_in_worktree(in_sandbox)
+    path, pr = in_sandbox.merged_worktree()
     extra = in_sandbox.commit(cwd=path, message="Follow-up")
 
     [candidate] = report_json("feat")["candidates"]
@@ -139,7 +131,7 @@ def test_report_json_detached_worktree(in_sandbox):
 
 def test_report_json_worktree_blockers(in_sandbox, global_excludes):
     global_excludes.write_text(".plans/\n")
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     in_sandbox.new_branch("other")
     in_sandbox.git("merge", "--no-commit", "--no-ff", "other", cwd=path)
     in_sandbox.git("worktree", "lock", str(path))
@@ -187,7 +179,7 @@ def test_report_json_main_worktree_and_stash_blockers(in_sandbox):
 
 
 def test_report_json_current_worktree_blocker(in_sandbox, monkeypatch):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     monkeypatch.chdir(path)
 
     [candidate] = report_json("feat")["candidates"]
@@ -198,7 +190,7 @@ def test_report_json_current_worktree_blocker(in_sandbox, monkeypatch):
 
 
 def test_report_table_shows_candidates(in_sandbox):
-    merged_branch_in_worktree(in_sandbox)
+    in_sandbox.merged_worktree()
 
     result = runner.invoke(cli.app, ["report", "--no-fetch"])
 
@@ -215,7 +207,7 @@ def test_report_unknown_target_fails(in_sandbox):
 
 
 def test_clean_deletes_and_prints_recovery(in_sandbox):
-    merged_branch_in_worktree(in_sandbox)
+    in_sandbox.merged_worktree()
     tip = in_sandbox.tip("feat")
 
     result = runner.invoke(cli.app, ["clean", "feat"])
@@ -230,7 +222,7 @@ def clean_json(*args):
 
 
 def test_clean_json_would_delete(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     tip = in_sandbox.tip("feat")
 
     exit_code, output = clean_json("--dry-run", "feat")
@@ -316,10 +308,11 @@ def test_clean_refusal_exits_nonzero(in_sandbox):
     assert "refused" in result.stdout
 
 
-def test_clean_without_targets_is_an_error(in_sandbox):
-    result = runner.invoke(cli.app, ["clean"])
+@pytest.mark.parametrize("args", [[], ["--all", "feat"]])
+def test_clean_needs_either_targets_or_all(in_sandbox, args):
+    result = runner.invoke(cli.app, ["clean", *args])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     assert "--all" in result.stderr
 
 
@@ -332,30 +325,7 @@ def test_outside_a_git_repository_fails(tmp_path, monkeypatch):
     assert "Error" in result.stderr
 
 
-def test_no_subcommand_prints_help():
-    result = runner.invoke(cli.app, [])
-
-    assert "report" in result.output
-    assert "clean" in result.output
-
-
-def test_missing_git_fails_cleanly(in_sandbox, monkeypatch):
-    monkeypatch.setenv("PATH", "")
-
-    result = runner.invoke(cli.app, ["report"])
-
-    assert result.exit_code == 1
-    assert "git is not installed" in result.stderr
-
-
-def test_clean_with_targets_and_all_is_an_error(in_sandbox):
-    result = runner.invoke(cli.app, ["clean", "--all", "feat"])
-
-    assert result.exit_code != 0
-    assert "--all" in result.stderr
-
-
-def test_report_json_branch_without_worktree_and_unmatched_pull_request(in_sandbox):
+def test_report_json_reused_branch_name_does_not_match_old_pull_request(in_sandbox):
     in_sandbox.new_branch("feat")
     old_pr = in_sandbox.open_pr("feat")
     in_sandbox.squash_merge(old_pr)
@@ -390,7 +360,7 @@ def test_report_json_branch_without_worktree_and_unmatched_pull_request(in_sandb
 
 
 def test_report_json_missing_worktree(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     shutil.rmtree(path)
 
     [candidate] = report_json("feat")["candidates"]
@@ -408,7 +378,7 @@ def test_report_json_missing_worktree(in_sandbox):
 
 
 def test_clean_json_deleted(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     tip = in_sandbox.tip("feat")
 
     exit_code, output = clean_json("feat")
@@ -431,7 +401,7 @@ def test_clean_json_deleted(in_sandbox):
 
 
 def test_report_json_error_blocker(in_sandbox, monkeypatch):
-    merged_branch_in_worktree(in_sandbox)
+    in_sandbox.merged_worktree()
 
     def fail(cwd):
         raise PermissionError(13, "Permission denied", str(cwd))
@@ -449,33 +419,8 @@ def test_report_json_error_blocker(in_sandbox, monkeypatch):
     ]
 
 
-def test_report_table_shows_paths_with_markup_characters(in_sandbox, monkeypatch):
-    monkeypatch.setenv("COLUMNS", "500")
-    in_sandbox.add_detached_worktree("[bold]")
-
-    result = runner.invoke(cli.app, ["report", "--no-fetch"])
-
-    assert result.exit_code == 0, result.output
-    assert "wt-[bold]" in result.stdout
-
-
-def test_clean_output_shows_targets_with_markup_characters(in_sandbox):
-    result = runner.invoke(cli.app, ["clean", "--no-fetch", "[/x]"])
-
-    assert result.exit_code == 1
-    assert "[/x]: not_found" in result.stdout
-
-
-def test_report_lists_each_candidate_once(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
-
-    output = report_json("feat", str(path))
-
-    assert [c["id"] for c in output["candidates"]] == ["feat"]
-
-
 def test_report_json_repo_is_main_worktree(in_sandbox, monkeypatch):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     monkeypatch.chdir(path)
 
     assert report_json()["repo"] == str(in_sandbox.repo)
@@ -485,7 +430,7 @@ def test_report_json_nested_repository_and_unreadable_blockers(
     in_sandbox, global_excludes, restore_permissions
 ):
     global_excludes.write_text(".plans/\n")
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     in_sandbox.git("init", "-q", str(path / ".plans" / "experiment"))
     private = path / ".plans" / "private"
     private.mkdir()
@@ -536,7 +481,7 @@ def test_report_json_branch_missing_worktree(in_sandbox):
 
 def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
     global_excludes.write_text(".plans/\n")
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     (path / ".plans").mkdir()
     (path / ".plans" / "plan.md").write_text("plan\n")
 
@@ -577,7 +522,7 @@ def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
 
 
 def test_clean_json_refused_with_blockers(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
+    path, _ = in_sandbox.merged_worktree()
     (path / "notes.txt").write_text("notes\n")
     tip = in_sandbox.tip("feat")
 

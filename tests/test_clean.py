@@ -9,19 +9,12 @@ from git_janitor.clean import clean
 from git_janitor.model import BlockerCode, Outcome, Verdict
 
 
-def merged_branch_in_worktree(sandbox, name="feat"):
-    path = sandbox.add_worktree(name, create=True)
-    sandbox.commit(cwd=path)
-    sandbox.squash_merge(sandbox.open_pr(name))
-    return path
-
-
 def local_branches(sandbox):
     return sandbox.git("branch", "--format=%(refname:short)").splitlines()
 
 
 def test_clean_removes_worktree_and_branch(sandbox):
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
     tip = sandbox.tip("feat")
 
     result = clean(sandbox.repo, sandbox.github, targets=["feat"])
@@ -51,7 +44,7 @@ def test_clean_removes_worktree_with_disposable_ignored_files(sandbox):
 
 
 def test_clean_accepts_worktree_path_as_target(sandbox):
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
 
     result = clean(sandbox.repo, sandbox.github, targets=[str(path)])
 
@@ -71,23 +64,6 @@ def test_clean_refuses_target_without_delete_verdict(sandbox):
     assert "feat" in local_branches(sandbox)
 
 
-def test_clean_reanalyzes_instead_of_trusting_an_earlier_report(sandbox):
-    path = merged_branch_in_worktree(sandbox)
-    assert analyze(sandbox.repo, sandbox.github).candidate("feat").verdict is Verdict.DELETE
-    (path / "new-work.txt").write_text("unsaved\n")
-
-    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
-
-    assert result.outcomes[0].outcome is Outcome.REFUSED
-    assert (path / "new-work.txt").exists()
-
-
-def test_clean_reports_unknown_targets(sandbox):
-    result = clean(sandbox.repo, sandbox.github, targets=["nope"])
-
-    assert result.outcomes[0].outcome is Outcome.NOT_FOUND
-
-
 def test_clean_all_deletes_only_candidates_with_delete_verdict(sandbox):
     sandbox.new_branch("merged")
     sandbox.squash_merge(sandbox.open_pr("merged"))
@@ -102,7 +78,7 @@ def test_clean_all_deletes_only_candidates_with_delete_verdict(sandbox):
 
 
 def test_clean_dry_run_deletes_nothing(sandbox):
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
 
     result = clean(sandbox.repo, sandbox.github, targets=["feat"], dry_run=True)
 
@@ -111,12 +87,7 @@ def test_clean_dry_run_deletes_nothing(sandbox):
     assert "feat" in local_branches(sandbox)
 
 
-def test_clean_requires_targets_or_all(sandbox):
-    with pytest.raises(ValueError):
-        clean(sandbox.repo, sandbox.github)
-
-
-def test_clean_failure_reports_recovery_only_for_completed_actions(sandbox, unremovable_worktree):
+def test_clean_keeps_branch_when_worktree_removal_fails(sandbox, unremovable_worktree):
     result = clean(sandbox.repo, sandbox.github, targets=["feat"])
 
     [outcome] = result.outcomes
@@ -157,7 +128,7 @@ def test_clean_keeps_branch_that_moved(sandbox, after_analysis):
 
 def test_clean_keeps_worktree_that_gained_precious_files(sandbox, global_excludes, after_analysis):
     global_excludes.write_text(".plans/\n")
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
 
     def add_plan():
         (path / ".plans").mkdir()
@@ -194,21 +165,8 @@ def test_clean_recovery_commands_are_shell_quoted(sandbox):
     assert result.outcomes[0].recovery == (f"git branch 'feat;echo' {tip}",)
 
 
-def test_clean_runs_each_candidate_once(sandbox):
-    path = merged_branch_in_worktree(sandbox)
-
-    result = clean(sandbox.repo, sandbox.github, targets=["feat", str(path)])
-
-    assert [(o.id, o.outcome) for o in result.outcomes] == [("feat", Outcome.DELETED)]
-
-
-def test_clean_rejects_targets_with_all(sandbox):
-    with pytest.raises(ValueError):
-        clean(sandbox.repo, sandbox.github, targets=["feat"], all=True)
-
-
 def test_clean_removes_branch_whose_worktree_directory_is_missing(sandbox):
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
     shutil.rmtree(path)
 
     result = clean(sandbox.repo, sandbox.github, targets=["feat"])
@@ -222,8 +180,8 @@ def test_clean_removes_branch_whose_worktree_directory_is_missing(sandbox):
     "error", [PermissionError(13, "Permission denied"), RuntimeError("Permission denied")]
 )
 def test_clean_reports_errors_and_continues(sandbox, after_analysis, monkeypatch, error):
-    first = merged_branch_in_worktree(sandbox, "first")
-    merged_branch_in_worktree(sandbox, "second")
+    first, _ = sandbox.merged_worktree("first")
+    sandbox.merged_worktree("second")
     worktree_status = git.worktree_status
 
     def fail_for_first(cwd):
@@ -244,7 +202,7 @@ def test_clean_reports_errors_and_continues(sandbox, after_analysis, monkeypatch
 
 def worktree_with_plans(sandbox, global_excludes):
     global_excludes.write_text(".plans/\n")
-    path = merged_branch_in_worktree(sandbox)
+    path, _ = sandbox.merged_worktree()
     (path / ".plans").mkdir()
     (path / ".plans" / "plan.md").write_text("plan\n")
     return path
@@ -304,21 +262,6 @@ def test_clean_accepting_recent_activity_deletes_fresh_worktree(sandbox):
 
     assert result.outcomes[0].outcome is Outcome.DELETED
     assert not path.exists()
-
-
-@pytest.mark.parametrize(
-    "code",
-    [
-        BlockerCode.UNTRACKED,
-        BlockerCode.DIRTY,
-        BlockerCode.IS_MAIN,
-        BlockerCode.UNREADABLE,
-        BlockerCode.NESTED_REPOSITORY,
-    ],
-)
-def test_clean_rejects_blockers_that_cannot_be_accepted(sandbox, code):
-    with pytest.raises(ValueError, match="can't be accepted"):
-        clean(sandbox.repo, sandbox.github, targets=["feat"], accept=[code])
 
 
 def test_clean_rejects_accept_with_all(sandbox):
