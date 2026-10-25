@@ -1,7 +1,5 @@
 """Find ignored files in a worktree that look like personal work rather than generated files."""
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from fnmatch import fnmatch

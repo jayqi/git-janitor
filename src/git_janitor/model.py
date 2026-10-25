@@ -1,7 +1,5 @@
 """What git-janitor knows about a repository's branches and worktrees, and what it concludes."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum

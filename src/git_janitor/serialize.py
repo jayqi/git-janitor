@@ -1,7 +1,5 @@
 """JSON-compatible representations of reports and clean results. See README.md for the schema."""
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from typing import Any
 
