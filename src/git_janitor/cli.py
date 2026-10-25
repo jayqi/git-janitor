@@ -5,14 +5,15 @@ from pathlib import Path
 from typing import Annotated
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 import typer
 
 from git_janitor import git
 from git_janitor.analysis import analyze
-from git_janitor.clean import CleanResult, clean
+from git_janitor.clean import clean
 from git_janitor.github import GhGitHubClient, GitHubClient, GitHubError
-from git_janitor.model import Candidate, PullRequestEvidence, Verdict
+from git_janitor.model import Candidate, CleanResult, PullRequestEvidence, Verdict
 from git_janitor.serialize import clean_result_to_dict, report_to_dict
 
 app = typer.Typer(
@@ -39,7 +40,7 @@ def github_client() -> GitHubClient:
 
 
 def fail(message: str) -> typer.Exit:
-    err_console.print(f"[red]Error:[/red] {message}", highlight=False)
+    err_console.print(f"[red]Error:[/red] {escape(message)}", highlight=False)
     return typer.Exit(code=1)
 
 
@@ -60,7 +61,7 @@ def report(
     repo = repo_root()
     try:
         result = analyze(repo, github_client(), fetch=not no_fetch)
-    except (git.GitError, GitHubError) as exc:
+    except (git.GitError, GitHubError, OSError) as exc:
         raise fail(str(exc)) from exc
 
     candidates = result.candidates
@@ -69,7 +70,7 @@ def report(
         missing = [target for target, candidate in found.items() if candidate is None]
         if missing:
             raise fail(f"No such candidates: {', '.join(missing)}")
-        candidates = [c for c in found.values() if c is not None]
+        candidates = list(dict.fromkeys(c for c in found.values() if c is not None))
 
     if as_json:
         print(json.dumps(report_to_dict(result, candidates), indent=2))
@@ -102,7 +103,7 @@ def clean_command(
             dry_run=dry_run,
             fetch=not no_fetch,
         )
-    except (git.GitError, GitHubError) as exc:
+    except (git.GitError, GitHubError, OSError) as exc:
         raise fail(str(exc)) from exc
 
     if as_json:
@@ -125,10 +126,10 @@ def candidates_table(candidates: Sequence[Candidate]) -> Table:
             if isinstance(e, PullRequestEvidence) and e.matched
         ]
         table.add_row(
-            candidate.id,
+            escape(candidate.id),
             f"[{style}]{candidate.verdict}[/{style}]",
             str(candidate.status),
-            os.path.relpath(candidate.worktree.path) if candidate.worktree else "",
+            escape(os.path.relpath(candidate.worktree.path)) if candidate.worktree else "",
             ", ".join(str(b.code) for b in candidate.blockers),
             f"#{matched[0].number}" if matched else "",
         )
@@ -140,8 +141,8 @@ def print_clean_result(result: CleanResult) -> None:
         line = f"{outcome.id}: {outcome.outcome}"
         if outcome.detail:
             line += f" ({outcome.detail})"
-        console.print(line, highlight=False)
+        console.print(escape(line), highlight=False)
         for command in outcome.recovery:
-            console.print(f"  to recover: {command}", highlight=False)
+            console.print(f"  to recover: {escape(command)}", highlight=False)
     if not result.outcomes:
         console.print("Nothing to clean.")

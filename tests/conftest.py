@@ -168,6 +168,29 @@ class Sandbox:
         self.github.update(number, state=PullRequestState.MERGED)
         return squash
 
+    def merge_commit_merge(self, number: int) -> str:
+        """Merge a pull request on origin with a merge commit, the way GitHub does."""
+        pr = self.github.get(number)
+        base_ref = f"refs/heads/{pr.base}"
+        tree = run_git(
+            "merge-tree", "--write-tree", base_ref, pr.head_oid, cwd=self.origin
+        ).splitlines()[0]
+        merge = run_git(
+            "commit-tree",
+            tree,
+            "-p",
+            base_ref,
+            "-p",
+            pr.head_oid,
+            "-m",
+            f"Merge #{number}",
+            cwd=self.origin,
+        )
+        run_git("update-ref", base_ref, merge, cwd=self.origin)
+        run_git("update-ref", "-d", f"refs/heads/{pr.head_name}", cwd=self.origin)
+        self.github.update(number, state=PullRequestState.MERGED)
+        return merge
+
     def close_pr(self, number: int) -> None:
         self.github.update(number, state=PullRequestState.CLOSED)
 
@@ -219,3 +242,11 @@ def unremovable_worktree(sandbox):
     (path / "readonly").chmod(0o555)
     yield path
     (path / "readonly").chmod(0o755)
+
+
+@pytest.fixture
+def restore_permissions():
+    paths = []
+    yield paths
+    for path in paths:
+        path.chmod(0o755)

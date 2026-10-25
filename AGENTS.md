@@ -49,12 +49,14 @@ These are the reasons the tool exists. Don't weaken them without an explicit dec
 - Only `merged` candidates with no blockers get the `delete` verdict.
 - `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
-- Each deletion re-checks its target immediately beforehand: a worktree's HEAD and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
+- Each deletion re-checks its target immediately beforehand: a worktree's HEAD commit, branch, and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
+- Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, and a failed ancestry check is an error rather than a "no".
 - Nothing on the remote is ever modified.
 
 ## Testing
 
 - Git behavior is tested against real temporary repositories, with a bare repository standing in as `origin`. Don't mock git.
 - The CLI tests compare JSON output against exact expected values, covering every variant of candidate, blocker, evidence, and clean outcome. Keep it that way when adding variants.
-- GitHub is replaced with an in-memory fake implementing `GitHubClient`. To simulate a squash merge, a test creates the squash commit on the fake origin's default branch, creates `refs/pull/<N>/head` on the bare origin, and registers a merged pull request in the fake.
+- GitHub is replaced with an in-memory fake implementing `GitHubClient`. The `Sandbox` fixture simulates pull requests: it creates `refs/pull/<N>/head` on the bare origin, registers the pull request in the fake, and merges with a squash or merge commit on the origin's default branch.
+- The tests need git 2.42 or newer (for `git worktree add --orphan`).
 - There are no tests against live GitHub.

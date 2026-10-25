@@ -8,7 +8,7 @@ It's designed to be used by coding agents first, with JSON output, and by people
 
 ## Prerequisites
 
-- `git`
+- `git` 2.36 or newer
 - GitHub's [`gh` CLI](https://cli.github.com/), installed and logged in
 - A repository whose `origin` remote is on GitHub
 
@@ -52,12 +52,13 @@ The default branch comes from GitHub.
 |---|---|
 | `merged` | A matching pull request was merged into the default branch. |
 | `merged_plus_local` | A pull request merged into the default branch, but the local tip has commits beyond its head. |
-| `pr_open` | A matching pull request is open. |
+| `pr_open` | A matching pull request is open, or an open pull request's head is behind the local tip. Any open matching pull request takes precedence over closed or merged ones. |
 | `pr_closed` | A matching pull request was closed without merging. |
 | `merged_into_other_base` | A matching pull request was merged into a branch other than the default branch. |
-| `no_unique_commits` | No matching pull request, and the tip is already in the default branch. This includes branches created but not yet committed to. |
+| `no_unique_commits` | No matching pull request, and the tip is already in the default branch. This includes branches created but not yet committed to, and branches fast-forwarded to the default branch. |
 | `no_pr` | No matching pull request, and the tip has commits that aren't in the default branch. |
 | `default_branch` | This is the default branch. It is never deleted. |
+| `branch_missing` | A worktree whose branch has no commits yet or no longer exists as a local branch. |
 
 A worktree with a detached HEAD is judged by its HEAD commit. It has no branch name, so it can only be `no_unique_commits` or `no_pr`. A worktree in the middle of a rebase or bisect is detached too, but git-janitor reports it with the branch the rebase or bisect started from.
 
@@ -67,7 +68,7 @@ The report has one row, a **candidate**, per thing that could be cleaned up:
 
 - a branch with no worktree,
 - a branch and the worktree it's checked out in, or
-- a worktree with a detached HEAD.
+- a worktree with a detached HEAD, or whose branch doesn't exist (`branch_missing`).
 
 Each candidate has a verdict:
 
@@ -94,15 +95,22 @@ Any blocker downgrades a `merged` candidate to `review`.
 | `nested_worktree` | Other worktrees are inside this worktree's directory, so removing it would delete them too. |
 | `multiple_worktrees` | The branch is checked out in more than one worktree (with `git worktree add --force`). |
 | `broken_worktree` | The worktree's directory exists, but git no longer recognizes it as a worktree, for example because its `.git` file was deleted. |
+| `hidden_changes` | Tracked files marked `--skip-worktree` or `--assume-unchanged` differ from the index. `git status` doesn't show these changes. |
+| `submodules` | The worktree has populated submodules, which `git worktree remove` refuses to remove. |
+| `nested_repository` | A git repository is inside an ignored directory. |
+| `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
 
 ### Precious ignored files
 
-`git worktree remove` deletes ignored files without warning, so git-janitor checks them first. An ignored file is classified by which ignore rule matched it:
+`git worktree remove` deletes ignored files without warning, so git-janitor checks them first. An ignored file is classified as follows:
 
 - Matched by a `.gitignore` file committed to the repository: **disposable**. These are things the project generates, like `.venv/` or `build/`. A `.gitignore` that isn't committed, such as `notes/.gitignore` containing `*`, doesn't count.
 - Matched by your global excludes file (`core.excludesFile`) or `.git/info/exclude`: **precious**. These are things you set aside personally, like `.plans/`.
+- Anything inside a cache directory, marked by a [`CACHEDIR.TAG`](https://bford.info/cachedir/) file, is disposable. Tools like uv, ruff, and pytest create these, along with an uncommitted `.gitignore` that ignores their contents.
 - Common operating-system and editor files are always disposable, even when matched by your global excludes: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `.idea/`, `.vscode/`, `*.swp`, `*.swo`, `*~`.
-- An ignored directory that contains another git repository is always precious. Other worktrees are reported as `nested_worktree` instead.
+- Anything git-janitor can't attribute to an ignore rule is precious.
+
+Git repositories anywhere in ignored directories are reported as `nested_repository`, and other worktrees as `nested_worktree`, rather than file by file.
 
 To mark more patterns as disposable, add them to git config. Each pattern is matched against single file and directory names, so a pattern containing `/` never matches.
 
@@ -163,8 +171,9 @@ git config --global --add janitor.disposable '.envrc'
 
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
-- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (`dirty`, `untracked`, and `nested_worktree`, relative to the worktree; `multiple_worktrees`, absolute), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `stashes` (`stashes`, each with `ref` and `subject`).
-- `evidence` holds the pull requests found for the branch name, newest first, whether or not they matched. For `merged_plus_local`, it also holds an `extra_commits` entry with the merged `pull_request` number and the `sha` and `subject` of each commit beyond its head, oldest first.
+- `repo` is the path of the main worktree, wherever the command was run from.
+- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (relative to the worktree for `dirty`, `untracked`, `hidden_changes`, `submodules`, `nested_worktree`, `nested_repository`, and `unreadable`; absolute for `multiple_worktrees`), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `stashes` (`stashes`, each with `ref` and `subject`).
+- `evidence` holds the pull requests found for the branch name, newest first, whether or not they matched. When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), it also holds an `extra_commits` entry with that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
 - `actions` lists, in order, what `clean` would do.
 
 `git janitor clean --json` prints the outcome for each target:
@@ -186,7 +195,7 @@ git config --global --add janitor.disposable '.envrc'
 }
 ```
 
-`outcome` is one of `deleted`, `would_delete` (with `--dry-run`), `refused` (verdict isn't `delete`), `not_found`, or `failed` (git refused an action; `detail` has its error). `actions` are the candidate's planned actions. `recovery` covers only the actions that were carried out, or would be with `--dry-run`.
+`outcome` is one of `deleted`, `would_delete` (with `--dry-run`), `refused` (verdict isn't `delete`), `not_found` (with `verdict: null`), or `failed` (an action failed or its target changed since the analysis; `detail` says why). `actions` are the candidate's planned actions. `recovery` covers only the actions that were carried out, or would be with `--dry-run`.
 
 `schema_version` increases whenever the shape of either output changes incompatibly.
 
@@ -195,7 +204,7 @@ git config --global --add janitor.disposable '.envrc'
 `git janitor clean` takes candidate ids, or `--all` for every candidate whose verdict is `delete`. Running it with neither, or with both, is an error.
 
 - It always re-runs the analysis and refuses any target whose verdict isn't `delete`. There is no option to force it.
-- Right before removing a worktree, it checks again that the worktree's HEAD is unchanged and that it has no blockers. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
+- Right before removing a worktree, it checks again that the worktree's HEAD commit and branch are unchanged and that it has no blockers. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
 - It removes the worktree with `git worktree remove` (without `--force`), then deletes the branch and its `branch.<name>` config.
 - It only touches local branches and worktrees. It never deletes anything on GitHub.
 - It prints the tip commit of each deleted branch and a command to recreate it, such as `git branch feat-x 4f1c0de`. This works until git garbage-collects the commit.
@@ -205,4 +214,4 @@ git config --global --add janitor.disposable '.envrc'
 | Code | Meaning |
 |---|---|
 | `0` | The command ran. For `report`, this is true whatever the verdicts are. |
-| `1` | The tool couldn't run (not a git repository, `gh` missing or not logged in, fetch failed), a target doesn't exist, or `clean` refused or failed to delete a target. |
+| `1` | The tool couldn't run (not a git repository, `gh` missing or not logged in, fetch failed, origin's default branch not fetched), a target doesn't exist, or `clean` refused or failed to delete a target. |

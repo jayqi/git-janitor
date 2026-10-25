@@ -12,11 +12,13 @@ from git_janitor.model import (
     DirtyBlocker,
     Evidence,
     ExtraCommits,
+    HiddenChangesBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
     IsMainBlocker,
     LockedBlocker,
     MultipleWorktreesBlocker,
+    NestedRepositoryBlocker,
     NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequest,
@@ -27,10 +29,12 @@ from git_janitor.model import (
     Stash,
     StashesBlocker,
     Status,
+    SubmodulesBlocker,
+    UnreadableBlocker,
     UntrackedBlocker,
     Worktree,
 )
-from git_janitor.precious import find_precious_files
+from git_janitor.precious import scan_ignored
 
 REMOTE = "origin"
 
@@ -56,6 +60,11 @@ def analyze(
     data = github.fetch(git.remote_url(REMOTE, cwd=repo), head_names)
     default_branch = data.default_branch
     default_ref = f"refs/remotes/{REMOTE}/{default_branch}"
+    if not git.ref_exists(default_ref, cwd=repo):
+        raise git.GitError(
+            f"{default_ref} doesn't exist. git-janitor needs {REMOTE}'s default branch "
+            f"({default_branch}) to be fetched."
+        )
 
     candidates = []
     for branch in branches:
@@ -86,13 +95,18 @@ def analyze(
             )
         )
 
+    branch_names = {branch.name for branch in branches}
     for worktree in worktrees:
-        if worktree.branch or worktree.is_main:
+        if worktree.is_main or worktree.branch in branch_names:
             continue
+        if worktree.branch is None:
+            status = _classify_unmatched(worktree.head, default_ref, repo)
+        else:
+            status = Status.BRANCH_MISSING
         candidates.append(
             Candidate(
                 id=str(worktree.path),
-                status=_classify_unmatched(worktree.head, default_ref, repo),
+                status=status,
                 branch=None,
                 worktree=worktree,
                 blockers=worktree_blockers(worktree, worktrees, cwd),
@@ -101,7 +115,7 @@ def analyze(
         )
 
     return Report(
-        repo=repo,
+        repo=next(wt.path for wt in worktrees if wt.is_main),
         github_repo=data.name_with_owner,
         default_branch=default_branch,
         fetched=fetch,
@@ -158,8 +172,12 @@ def worktree_blockers(
     status = git.worktree_status(worktree.path)
     if status.changed:
         blockers.append(DirtyBlocker(paths=status.changed))
+    if hidden := git.hidden_changes(worktree.path):
+        blockers.append(HiddenChangesBlocker(paths=hidden))
     if status.untracked:
         blockers.append(UntrackedBlocker(paths=status.untracked))
+    if submodules := git.populated_submodules(worktree.path):
+        blockers.append(SubmodulesBlocker(paths=submodules))
     nested = [
         other.path
         for other in worktrees
@@ -168,9 +186,13 @@ def worktree_blockers(
     if nested:
         paths = tuple(path.relative_to(worktree.path).as_posix() for path in nested)
         blockers.append(NestedWorktreeBlocker(paths=paths))
-    precious = find_precious_files(worktree.path, status.ignored, skip=nested)
-    if precious:
-        blockers.append(PreciousFilesBlocker(files=tuple(precious)))
+    scan = scan_ignored(worktree.path, status.ignored, skip=nested)
+    if scan.nested_repositories:
+        blockers.append(NestedRepositoryBlocker(paths=scan.nested_repositories))
+    if scan.precious_files:
+        blockers.append(PreciousFilesBlocker(files=scan.precious_files))
+    if scan.unreadable:
+        blockers.append(UnreadableBlocker(paths=scan.unreadable))
     return tuple(blockers)
 
 
@@ -189,12 +211,15 @@ def _classify_branch(
     default_branch: str,
     repo: Path,
 ) -> tuple[Status, tuple[Evidence, ...]]:
-    matched = {pr.number for pr in prs if _contains(pr, branch.tip, default_ref, repo)}
+    in_default = git.is_ancestor(branch.tip, default_ref, cwd=repo)
+    matched = {pr.number for pr in prs if _contains(pr, branch.tip, in_default, repo)}
     pr_evidence = tuple(
         PullRequestEvidence(pull_request=pr, matched=pr.number in matched)
         for pr in sorted(prs, key=lambda pr: pr.number, reverse=True)
     )
     matching = [pr for pr in prs if pr.number in matched]
+    if any(pr.state is PullRequestState.OPEN for pr in matching):
+        return Status.PR_OPEN, pr_evidence
     if matching:
         pr = max(matching, key=lambda pr: pr.number)
         match pr.state:
@@ -202,27 +227,35 @@ def _classify_branch(
                 return Status.MERGED, pr_evidence
             case PullRequestState.MERGED:
                 return Status.MERGED_INTO_OTHER_BASE, pr_evidence
-            case PullRequestState.OPEN:
-                return Status.PR_OPEN, pr_evidence
-            case PullRequestState.CLOSED:
+            case _:
                 return Status.PR_CLOSED, pr_evidence
+    if in_default:
+        return Status.NO_UNIQUE_COMMITS, pr_evidence
 
-    merged_behind = [
+    # Pull requests whose head the tip has moved beyond
+    behind = [
         pr
         for pr in prs
-        if pr.state is PullRequestState.MERGED
-        and pr.base == default_branch
+        if (
+            pr.state is PullRequestState.OPEN
+            or (pr.state is PullRequestState.MERGED and pr.base == default_branch)
+        )
+        and git.has_commit(pr.head_oid, cwd=repo)
         and git.is_ancestor(pr.head_oid, branch.tip, cwd=repo)
     ]
-    if merged_behind:
-        pr = max(merged_behind, key=lambda pr: pr.number)
+    if behind:
+        open_prs = [pr for pr in behind if pr.state is PullRequestState.OPEN]
+        pr = max(open_prs or behind, key=lambda pr: pr.number)
         extra = ExtraCommits(
             pull_request=pr.number,
-            commits=tuple(git.commits_between(pr.head_oid, branch.tip, cwd=repo)),
+            commits=tuple(
+                git.commits_between(pr.head_oid, branch.tip, cwd=repo, exclude=default_ref)
+            ),
         )
-        return Status.MERGED_PLUS_LOCAL, (*pr_evidence, extra)
+        status = Status.PR_OPEN if open_prs else Status.MERGED_PLUS_LOCAL
+        return status, (*pr_evidence, extra)
 
-    return _classify_unmatched(branch.tip, default_ref, repo), pr_evidence
+    return Status.NO_PR, pr_evidence
 
 
 def _classify_unmatched(tip: str, default_ref: str, repo: Path) -> Status:
@@ -232,7 +265,7 @@ def _classify_unmatched(tip: str, default_ref: str, repo: Path) -> Status:
     return Status.NO_PR
 
 
-def _contains(pr: PullRequest, tip: str, default_ref: str, repo: Path) -> bool:
+def _contains(pr: PullRequest, tip: str, in_default: bool, repo: Path) -> bool:
     """Whether `tip` is the pull request's head commit or one of the pull request's own commits.
 
     A tip already in the default branch only matches the head exactly. Otherwise, a branch
@@ -240,7 +273,7 @@ def _contains(pr: PullRequest, tip: str, default_ref: str, repo: Path) -> bool:
     """
     if pr.head_oid == tip:
         return True
-    if git.is_ancestor(tip, default_ref, cwd=repo):
+    if in_default:
         return False
     if not git.has_commit(pr.head_oid, cwd=repo):
         try:

@@ -1,43 +1,20 @@
 from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 import shlex
 
 from git_janitor import git
 from git_janitor.analysis import analyze, worktree_blockers
 from git_janitor.github import GitHubClient
-from git_janitor.model import Action, Candidate, DeleteBranch, RemoveWorktree, Report, Verdict
-
-
-class Outcome(StrEnum):
-    DELETED = "deleted"
-    WOULD_DELETE = "would_delete"
-    REFUSED = "refused"
-    NOT_FOUND = "not_found"
-    FAILED = "failed"
-
-
-@dataclass(frozen=True, slots=True)
-class TargetOutcome:
-    id: str
-    outcome: Outcome
-    verdict: Verdict | None = None
-    detail: str = ""
-    actions: tuple[Action, ...] = ()
-    """The candidate's planned actions."""
-    recovery: tuple[str, ...] = ()
-    """Commands that restore what the completed actions made unreachable."""
-
-
-@dataclass(frozen=True, slots=True)
-class CleanResult:
-    report: Report
-    outcomes: tuple[TargetOutcome, ...]
-
-    @property
-    def ok(self) -> bool:
-        return all(o.outcome in (Outcome.DELETED, Outcome.WOULD_DELETE) for o in self.outcomes)
+from git_janitor.model import (
+    Action,
+    Candidate,
+    CleanResult,
+    DeleteBranch,
+    Outcome,
+    RemoveWorktree,
+    TargetOutcome,
+    Verdict,
+)
 
 
 def clean(
@@ -107,7 +84,7 @@ def _clean_candidate(
     for action in candidate.actions:
         try:
             _execute(action, candidate, repo, cwd)
-        except (git.GitError, ChangedSinceAnalysisError) as exc:
+        except (git.GitError, ChangedSinceAnalysisError, OSError) as exc:
             return outcome(Outcome.FAILED, str(exc), done)
         done.append(action)
     return outcome(Outcome.DELETED, done=done)
@@ -120,7 +97,10 @@ def _execute(action: Action, candidate: Candidate, repo: Path, cwd: Path) -> Non
             current = next((wt for wt in worktrees if wt.path == path), None)
             if current is None or candidate.worktree is None:
                 raise ChangedSinceAnalysisError(f"{path} is no longer a worktree")
-            if current.head != candidate.worktree.head:
+            if (current.head, current.branch) != (
+                candidate.worktree.head,
+                candidate.worktree.branch,
+            ):
                 raise ChangedSinceAnalysisError(f"HEAD of {path} changed since the analysis")
             blockers = worktree_blockers(current, worktrees, cwd)
             if blockers:

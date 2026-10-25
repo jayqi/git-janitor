@@ -1,9 +1,12 @@
+import shutil
+
 import pytest
 
 from git_janitor import clean as clean_module
+from git_janitor import git
 from git_janitor.analysis import analyze
-from git_janitor.clean import Outcome, clean
-from git_janitor.model import Verdict
+from git_janitor.clean import clean
+from git_janitor.model import Outcome, Verdict
 
 
 def merged_branch_in_worktree(sandbox, name="feat"):
@@ -216,3 +219,46 @@ def test_clean_runs_each_candidate_once(sandbox):
 def test_clean_rejects_targets_with_all(sandbox):
     with pytest.raises(ValueError):
         clean(sandbox.repo, sandbox.github, targets=["feat"], all=True)
+
+
+def test_clean_keeps_worktree_that_switched_branches(sandbox, after_analysis):
+    path = merged_branch_in_worktree(sandbox)
+    after_analysis(lambda: sandbox.git("switch", "-q", "-c", "agent-task", cwd=path))
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    assert result.outcomes[0].outcome is Outcome.FAILED
+    assert "changed since the analysis" in result.outcomes[0].detail
+    assert path.exists()
+
+
+def test_clean_removes_branch_whose_worktree_directory_is_missing(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    shutil.rmtree(path)
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    assert result.outcomes[0].outcome is Outcome.DELETED
+    assert "feat" not in local_branches(sandbox)
+    assert "wt-feat" not in sandbox.git("worktree", "list")
+
+
+def test_clean_reports_filesystem_errors_and_continues(sandbox, after_analysis, monkeypatch):
+    first = merged_branch_in_worktree(sandbox, "first")
+    merged_branch_in_worktree(sandbox, "second")
+    worktree_status = git.worktree_status
+
+    def fail_for_first(cwd):
+        if cwd == first:
+            raise PermissionError(13, "Permission denied", str(cwd))
+        return worktree_status(cwd)
+
+    after_analysis(lambda: monkeypatch.setattr(git, "worktree_status", fail_for_first))
+
+    result = clean(sandbox.repo, sandbox.github, all=True)
+
+    assert [(o.id, o.outcome) for o in result.outcomes] == [
+        ("first", Outcome.FAILED),
+        ("second", Outcome.DELETED),
+    ]
+    assert "Permission denied" in result.outcomes[0].detail

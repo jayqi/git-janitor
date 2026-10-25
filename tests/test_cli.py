@@ -6,7 +6,7 @@ import shutil
 import pytest
 from typer.testing import CliRunner
 
-from git_janitor import cli
+from git_janitor import cli, git
 
 runner = CliRunner()
 
@@ -448,3 +448,131 @@ def test_clean_json_deleted(in_sandbox):
             "recovery": [f"git branch feat {tip}"],
         }
     ]
+
+
+def test_filesystem_errors_fail_cleanly(in_sandbox, monkeypatch):
+    merged_branch_in_worktree(in_sandbox)
+
+    def fail(cwd):
+        raise PermissionError(13, "Permission denied", str(cwd))
+
+    monkeypatch.setattr(git, "worktree_status", fail)
+
+    result = runner.invoke(cli.app, ["report", "--no-fetch"])
+
+    assert result.exit_code == 1
+    assert "Permission denied" in result.stderr
+
+
+def test_report_table_shows_paths_with_markup_characters(in_sandbox, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "500")
+    in_sandbox.add_detached_worktree("[bold]")
+
+    result = runner.invoke(cli.app, ["report", "--no-fetch"])
+
+    assert result.exit_code == 0, result.output
+    assert "wt-[bold]" in result.stdout
+
+
+def test_clean_output_shows_targets_with_markup_characters(in_sandbox):
+    result = runner.invoke(cli.app, ["clean", "--no-fetch", "[/x]"])
+
+    assert result.exit_code == 1
+    assert "[/x]: not_found" in result.stdout
+
+
+def test_report_lists_each_candidate_once(in_sandbox):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+
+    output = report_json("feat", str(path))
+
+    assert [c["id"] for c in output["candidates"]] == ["feat"]
+
+
+def test_report_json_repo_is_main_worktree(in_sandbox, monkeypatch):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    monkeypatch.chdir(path)
+
+    assert report_json()["repo"] == str(in_sandbox.repo)
+
+
+def test_report_json_hidden_changes_and_submodule_blockers(in_sandbox):
+    path = in_sandbox.add_worktree("feat", create=True)
+    in_sandbox.commit(cwd=path)
+    in_sandbox.git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(in_sandbox.origin),
+        "sub",
+        cwd=path,
+    )
+    in_sandbox.git("commit", "-q", "-m", "Add submodule", cwd=path)
+    in_sandbox.squash_merge(in_sandbox.open_pr("feat"))
+    in_sandbox.git("update-index", "--skip-worktree", "file2.txt", cwd=path)
+    (path / "file2.txt").write_text("local edit\n")
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["blockers"] == [
+        {
+            "code": "hidden_changes",
+            "detail": "1 files with changes hidden from git status",
+            "paths": ["file2.txt"],
+        },
+        {"code": "submodules", "detail": "1 populated submodules", "paths": ["sub"]},
+    ]
+
+
+def test_report_json_nested_repository_and_unreadable_blockers(
+    in_sandbox, global_excludes, restore_permissions
+):
+    global_excludes.write_text(".plans/\n")
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    in_sandbox.git("init", "-q", str(path / ".plans" / "experiment"))
+    private = path / ".plans" / "private"
+    private.mkdir()
+    private.chmod(0o000)
+    restore_permissions.append(private)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["blockers"] == [
+        {
+            "code": "nested_repository",
+            "detail": "1 git repositories inside ignored directories",
+            "paths": [".plans/experiment"],
+        },
+        {
+            "code": "unreadable",
+            "detail": "1 ignored paths couldn't be read",
+            "paths": [".plans/private"],
+        },
+    ]
+
+
+def test_report_json_branch_missing_worktree(in_sandbox):
+    path = in_sandbox.root / "wt-orphan"
+    in_sandbox.git("worktree", "add", "-q", "--orphan", "-b", "newthing", str(path))
+
+    [candidate] = report_json(str(path))["candidates"]
+
+    assert candidate == {
+        "id": str(path),
+        "verdict": "review",
+        "status": "branch_missing",
+        "branch": None,
+        "worktree": {
+            "path": str(path),
+            "head": "0" * 40,
+            "detached": False,
+            "is_main": False,
+            "locked": False,
+            "prunable": False,
+        },
+        "blockers": [],
+        "evidence": [],
+        "actions": [{"kind": "remove_worktree", "path": str(path)}],
+    }

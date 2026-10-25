@@ -1,21 +1,28 @@
 import os
 import shutil
+import sys
+
+import pytest
 
 from git_janitor.analysis import analyze
 from git_janitor.model import (
     BrokenWorktreeBlocker,
     DeleteBranch,
     DirtyBlocker,
+    HiddenChangesBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
     IsMainBlocker,
     LockedBlocker,
     MultipleWorktreesBlocker,
+    NestedRepositoryBlocker,
     NestedWorktreeBlocker,
     PreciousFilesBlocker,
     RemoveWorktree,
     StashesBlocker,
     Status,
+    SubmodulesBlocker,
+    UnreadableBlocker,
     UntrackedBlocker,
     Verdict,
 )
@@ -287,7 +294,7 @@ def test_worktree_containing_another_worktree_needs_review(sandbox):
     assert candidate.blockers == (NestedWorktreeBlocker(paths=(".worktrees/inner",)),)
 
 
-def test_repository_nested_in_ignored_directory_is_precious(sandbox):
+def test_repository_nested_in_disposable_directory_needs_review(sandbox):
     path = sandbox.add_worktree("feat", create=True)
     commit_gitignore(sandbox, path, "vendor/\n")
     sandbox.squash_merge(sandbox.open_pr("feat"))
@@ -298,8 +305,7 @@ def test_repository_nested_in_ignored_directory_is_precious(sandbox):
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    files = blocker(candidate, PreciousFilesBlocker).files
-    assert [f.path for f in files] == ["vendor/lib/lib.py"]
+    assert candidate.blockers == (NestedRepositoryBlocker(paths=("vendor/lib",)),)
 
 
 def test_untracked_gitignore_does_not_make_files_disposable(sandbox):
@@ -373,3 +379,143 @@ def test_analysis_does_not_rewrite_worktree_index(sandbox):
     analyze(sandbox.repo, sandbox.github)
 
     assert index.stat().st_mtime_ns == before
+
+
+CACHEDIR_TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# A cache directory.\n"
+
+
+def test_ignored_files_whose_names_look_like_pathspecs_are_precious(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    with (sandbox.repo / ".git" / "info" / "exclude").open("a") as f:
+        f.write(":*\n")
+    (path / ":plan.md").write_text("plan\n")
+    (path / ":(glob)notes").write_text("notes\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    files = blocker(report.candidate("feat"), PreciousFilesBlocker).files
+    assert [f.path for f in files] == [":(glob)notes", ":plan.md"]
+
+
+def test_hidden_changes_to_tracked_files_need_review(sandbox):
+    path = sandbox.add_worktree("feat", create=True)
+    for _ in range(3):
+        sandbox.commit(cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("update-index", "--skip-worktree", "file2.txt", "file4.txt", cwd=path)
+    sandbox.git("update-index", "--assume-unchanged", "file3.txt", cwd=path)
+    (path / "file2.txt").write_text("local edit\n")
+    (path / "file3.txt").write_text("another local edit\n")
+    (path / "file4.txt").unlink()  # Like a sparse checkout: flagged, but not on disk
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (HiddenChangesBlocker(paths=("file2.txt", "file3.txt")),)
+
+
+def test_cache_directories_are_disposable(sandbox, global_excludes):
+    global_excludes.write_text(".plans/\n")
+    path = merged_branch_in_worktree(sandbox)
+    for cache in (path / ".ruff_cache", path / ".plans" / "cache"):
+        cache.mkdir(parents=True)
+        (cache / "CACHEDIR.TAG").write_text(CACHEDIR_TAG)
+        (cache / ".gitignore").write_text("*\n")
+        (cache / "data.bin").write_text("cached\n")
+    (path / ".plans" / "plan.md").write_text("plan\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    files = blocker(report.candidate("feat"), PreciousFilesBlocker).files
+    assert [f.path for f in files] == [".plans/plan.md"]
+
+
+def test_repository_nested_in_precious_directory_is_reported_once(sandbox, global_excludes):
+    global_excludes.write_text(".plans/\n")
+    path = merged_branch_in_worktree(sandbox)
+    sandbox.git("init", "-q", str(path / ".plans" / "experiment"))
+    (path / ".plans" / "experiment" / "work.py").write_text("work\n")
+    (path / ".plans" / "plan.md").write_text("plan\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.blockers[0] == NestedRepositoryBlocker(paths=(".plans/experiment",))
+    assert [f.path for f in blocker(candidate, PreciousFilesBlocker).files] == [".plans/plan.md"]
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o644])
+def test_unreadable_ignored_directories_need_review(
+    sandbox, global_excludes, restore_permissions, mode
+):
+    global_excludes.write_text(".plans/\n")
+    path = merged_branch_in_worktree(sandbox)
+    private = path / ".plans" / "private"
+    private.mkdir(parents=True)
+    (private / "secret.md").write_text("secret\n")
+    private.chmod(mode)
+    restore_permissions.append(private)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert blocker(candidate, UnreadableBlocker).paths[0].startswith(".plans/private")
+
+
+def test_worktree_with_populated_submodule_needs_review(sandbox):
+    path = sandbox.add_worktree("feat", create=True)
+    sandbox.git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(sandbox.origin),
+        "sub",
+        cwd=path,
+    )
+    sandbox.git("commit", "-q", "-m", "Add submodule", cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (SubmodulesBlocker(paths=("sub",)),)
+
+
+def test_worktree_on_unborn_branch_is_its_own_candidate(sandbox):
+    path = sandbox.root / "wt-orphan"
+    sandbox.git("worktree", "add", "-q", "--orphan", "-b", "newthing", str(path))
+    (path / "notes.md").write_text("notes\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate(str(path))
+    assert candidate.branch is None
+    assert candidate.worktree.branch == "newthing"
+    assert candidate.status is Status.BRANCH_MISSING
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.actions == (RemoveWorktree(path=path),)
+
+
+def test_worktree_whose_branch_was_deleted_is_its_own_candidate(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    sandbox.git("update-ref", "-d", "refs/heads/feat")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate(str(path)).status is Status.BRANCH_MISSING
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS requires UTF-8 file names")
+def test_non_utf8_file_names(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    (path / os.fsdecode(b"notes-\xff.txt")).write_text("notes\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    paths = blocker(report.candidate("feat"), UntrackedBlocker).paths
+    assert paths == (os.fsdecode(b"notes-\xff.txt"),)

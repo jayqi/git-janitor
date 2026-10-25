@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
 from subprocess import CompletedProcess
@@ -14,7 +15,13 @@ class GitError(RuntimeError):
 def _git(args: Sequence[str], cwd: Path, input: str | None = None) -> CompletedProcess[str]:
     try:
         return subprocess.run(
-            ["git", *args], cwd=cwd, input=input, capture_output=True, text=True, check=False
+            ["git", *args],
+            cwd=cwd,
+            input=input,
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            check=False,
         )
     except FileNotFoundError as exc:
         if not cwd.is_dir():
@@ -63,12 +70,20 @@ def _lines(output: str) -> list[str]:
 
 
 def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
-    return succeeds("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
+    result = _git(["merge-base", "--is-ancestor", ancestor, descendant], cwd)
+    if result.returncode not in (0, 1):
+        raise GitError(f"git merge-base --is-ancestor failed: {result.stderr.strip()}")
+    return result.returncode == 0
 
 
-def commits_between(base: str, tip: str, cwd: Path) -> list[Commit]:
-    """Commits reachable from `tip` but not `base`, oldest first."""
-    output = run_git("log", "--reverse", "--format=%H%x00%s", f"{base}..{tip}", cwd=cwd)
+def ref_exists(ref: str, cwd: Path) -> bool:
+    return succeeds("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=cwd)
+
+
+def commits_between(base: str, tip: str, cwd: Path, exclude: str | None = None) -> list[Commit]:
+    """Commits reachable from `tip` but not from `base` or `exclude`, oldest first."""
+    excluded = [f"^{base}"] + ([f"^{exclude}"] if exclude else [])
+    output = run_git("log", "--reverse", "--format=%H%x00%s", tip, *excluded, "--", cwd=cwd)
     return [Commit(*line.split("\0", 1)) for line in _lines(output)]
 
 
@@ -185,17 +200,61 @@ def worktree_status(cwd: Path) -> WorktreeStatus:
 
 def ignore_sources(paths: Sequence[str], cwd: Path) -> dict[str, str]:
     """Map each ignored path to the ignore file whose rule matched it."""
-    output = run_git("check-ignore", "-v", "-z", "--stdin", cwd=cwd, input="\0".join(paths))
-    fields = output.split("\0")
-    return {fields[i + 3]: fields[i] for i in range(0, len(fields) - 3, 4)}
+    # A `./` prefix stops check-ignore from reading paths like `:x` as pathspec magic
+    result = _git(
+        ["check-ignore", "-v", "-z", "--stdin"], cwd, input="\0".join(f"./{p}" for p in paths)
+    )
+    if result.returncode == 1:
+        return {}
+    if result.returncode != 0:
+        raise GitError(f"git check-ignore failed: {result.stderr.strip()}")
+    fields = result.stdout.split("\0")
+    return {fields[i + 3].removeprefix("./"): fields[i] for i in range(0, len(fields) - 3, 4)}
 
 
 def tracked_files(paths: Sequence[str], cwd: Path) -> set[str]:
     """The subset of `paths` that git tracks."""
     if not paths:
         return set()
-    output = run_git("ls-files", "-z", "--", *paths, cwd=cwd)
+    output = run_git("--literal-pathspecs", "ls-files", "-z", "--", *paths, cwd=cwd)
     return {path for path in output.split("\0") if path}
+
+
+def hidden_changes(cwd: Path) -> tuple[str, ...]:
+    """Tracked files marked skip-worktree or assume-unchanged whose content differs from the
+    index. `git status` doesn't report these, and `git worktree remove` deletes them.
+    """
+    output = run_git("ls-files", "-v", "-z", cwd=cwd)
+    flagged = [
+        entry[2:]
+        for entry in output.split("\0")
+        if entry and (entry[0] == "S" or entry[0].islower())
+    ]
+    on_disk = [path for path in flagged if (cwd / path).is_file()]
+    if not on_disk:
+        return ()
+    index = run_git("--literal-pathspecs", "ls-files", "-s", "-z", "--", *on_disk, cwd=cwd)
+    staged = {}
+    for entry in index.split("\0"):
+        if entry:
+            meta, path = entry.split("\t", 1)
+            staged[path] = meta.split(" ")[1]
+    hashes = _lines(run_git("hash-object", "--stdin-paths", cwd=cwd, input="\n".join(on_disk)))
+    return tuple(
+        path for path, sha in zip(on_disk, hashes, strict=True) if staged.get(path) != sha
+    )
+
+
+def populated_submodules(cwd: Path) -> tuple[str, ...]:
+    """Paths of submodules that are checked out in the worktree at `cwd`."""
+    output = run_git("ls-files", "-s", "-z", cwd=cwd)
+    paths = []
+    for entry in output.split("\0"):
+        if entry.startswith("160000 "):
+            path = entry.split("\t", 1)[1]
+            if os.path.lexists(cwd / path / ".git"):
+                paths.append(path)
+    return tuple(paths)
 
 
 def config_get_all(key: str, cwd: Path) -> list[str]:

@@ -89,6 +89,7 @@ class Status(StrEnum):
     NO_UNIQUE_COMMITS = "no_unique_commits"
     NO_PR = "no_pr"
     DEFAULT_BRANCH = "default_branch"
+    BRANCH_MISSING = "branch_missing"
 
 
 class Verdict(StrEnum):
@@ -126,6 +127,10 @@ class BlockerCode(StrEnum):
     NESTED_WORKTREE = "nested_worktree"
     MULTIPLE_WORKTREES = "multiple_worktrees"
     BROKEN_WORKTREE = "broken_worktree"
+    HIDDEN_CHANGES = "hidden_changes"
+    SUBMODULES = "submodules"
+    NESTED_REPOSITORY = "nested_repository"
+    UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +229,49 @@ class BrokenWorktreeBlocker:
     detail: ClassVar[str] = "the directory exists, but git no longer recognizes it as a worktree"
 
 
+@dataclass(frozen=True, slots=True)
+class HiddenChangesBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.HIDDEN_CHANGES
+    paths: tuple[str, ...]
+    """Tracked files marked skip-worktree or assume-unchanged that differ from the index."""
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.paths)} files with changes hidden from git status"
+
+
+@dataclass(frozen=True, slots=True)
+class SubmodulesBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.SUBMODULES
+    paths: tuple[str, ...]
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.paths)} populated submodules"
+
+
+@dataclass(frozen=True, slots=True)
+class NestedRepositoryBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.NESTED_REPOSITORY
+    paths: tuple[str, ...]
+    """Roots of git repositories inside ignored directories."""
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.paths)} git repositories inside ignored directories"
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadableBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.UNREADABLE
+    paths: tuple[str, ...]
+    """Ignored paths that couldn't be read to check whether they're precious."""
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.paths)} ignored paths couldn't be read"
+
+
 type Blocker = (
     DirtyBlocker
     | UntrackedBlocker
@@ -236,6 +284,10 @@ type Blocker = (
     | NestedWorktreeBlocker
     | MultipleWorktreesBlocker
     | BrokenWorktreeBlocker
+    | HiddenChangesBlocker
+    | SubmodulesBlocker
+    | NestedRepositoryBlocker
+    | UnreadableBlocker
 )
 
 
@@ -300,3 +352,35 @@ class Report:
             if candidate.worktree and candidate.worktree.path.resolve() == path:
                 return candidate
         return None
+
+
+class Outcome(StrEnum):
+    DELETED = "deleted"
+    WOULD_DELETE = "would_delete"
+    REFUSED = "refused"
+    NOT_FOUND = "not_found"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetOutcome:
+    """The result of cleaning one target."""
+
+    id: str
+    outcome: Outcome
+    verdict: Verdict | None = None
+    detail: str = ""
+    actions: tuple[Action, ...] = ()
+    """The candidate's planned actions."""
+    recovery: tuple[str, ...] = ()
+    """Commands that restore what the completed actions made unreachable."""
+
+
+@dataclass(frozen=True, slots=True)
+class CleanResult:
+    report: Report
+    outcomes: tuple[TargetOutcome, ...]
+
+    @property
+    def ok(self) -> bool:
+        return all(o.outcome in (Outcome.DELETED, Outcome.WOULD_DELETE) for o in self.outcomes)

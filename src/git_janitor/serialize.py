@@ -3,23 +3,28 @@
 from collections.abc import Sequence
 from typing import Any
 
-from git_janitor.clean import CleanResult, TargetOutcome
 from git_janitor.model import (
     Action,
     Blocker,
     Candidate,
+    CleanResult,
     DeleteBranch,
     DirtyBlocker,
     Evidence,
     ExtraCommits,
+    HiddenChangesBlocker,
     InProgressOpBlocker,
     MultipleWorktreesBlocker,
+    NestedRepositoryBlocker,
     NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequestEvidence,
     RemoveWorktree,
     Report,
     StashesBlocker,
+    SubmodulesBlocker,
+    TargetOutcome,
+    UnreadableBlocker,
     UntrackedBlocker,
 )
 
@@ -82,6 +87,10 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
             | UntrackedBlocker(paths=paths)
             | NestedWorktreeBlocker(paths=paths)
             | MultipleWorktreesBlocker(paths=paths)
+            | HiddenChangesBlocker(paths=paths)
+            | SubmodulesBlocker(paths=paths)
+            | NestedRepositoryBlocker(paths=paths)
+            | UnreadableBlocker(paths=paths)
         ):
             result["paths"] = list(paths)
         case PreciousFilesBlocker(files=files):

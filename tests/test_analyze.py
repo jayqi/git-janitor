@@ -1,8 +1,12 @@
+import pytest
+
 from git_janitor.analysis import analyze
+from git_janitor.git import GitError
 from git_janitor.model import (
     DeleteBranch,
     ExtraCommits,
     PullRequestEvidence,
+    StashesBlocker,
     Status,
     Verdict,
 )
@@ -221,3 +225,77 @@ def test_commit_and_stash_messages_with_unicode_line_separators(sandbox):
     candidate = report.candidate("feat")
     [extra] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
     assert [c.subject for c in extra.commits] == ["Before after"]
+    [stashes] = [b for b in candidate.blockers if isinstance(b, StashesBlocker)]
+    assert [s.subject for s in stashes.stashes] == ["On feat: idea\u2028more"]
+
+
+def test_missing_default_branch_ref_is_an_error(sandbox):
+    sandbox.git("update-ref", "-d", "refs/remotes/origin/main")
+
+    with pytest.raises(GitError, match="refs/remotes/origin/main"):
+        analyze(sandbox.repo, sandbox.github, fetch=False)
+
+
+def test_open_pull_request_with_unpushed_commits_is_kept(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    extra = sandbox.add_commits("feat")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.PR_OPEN
+    assert candidate.verdict is Verdict.KEEP
+    [evidence] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
+    assert evidence.pull_request == pr
+    assert [c.sha for c in evidence.commits] == extra
+
+
+def test_any_matching_open_pull_request_keeps_branch(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.open_pr("feat", base="release")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").status is Status.PR_OPEN
+
+
+def test_extra_commits_exclude_default_branch_commits(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("fetch", "-q", "origin")
+    sandbox.git("checkout", "-q", "feat")
+    sandbox.git("merge", "-q", "--no-ff", "-m", "Merge main into feat", "origin/main")
+    sandbox.git("checkout", "-q", "main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.MERGED_PLUS_LOCAL
+    [evidence] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
+    assert [c.subject for c in evidence.commits] == ["Merge main into feat"]
+
+
+def test_merge_commit_merged_branch_is_deletable(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.merge_commit_merge(sandbox.open_pr("feat"))
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.MERGED
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_branch_fast_forwarded_to_default_branch_has_no_unique_commits(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.merge_commit_merge(sandbox.open_pr("feat"))
+    sandbox.git("fetch", "-q", "origin")
+    sandbox.git("branch", "-f", "feat", "origin/main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert not any(isinstance(e, ExtraCommits) for e in candidate.evidence)
