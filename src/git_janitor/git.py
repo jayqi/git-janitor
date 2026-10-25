@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import os
 from pathlib import Path
 import subprocess
 from subprocess import CompletedProcess
@@ -102,30 +101,6 @@ def worktree_activity(worktree: Worktree, repo: Path) -> datetime | None:
     except OSError:
         pass
     return max((t for t in times if t is not None), default=None)
-
-
-def reflog_commits(ref: str, cwd: Path) -> list[str]:
-    """Commits in `ref`'s reflog, if it has one."""
-    result = _git(["log", "-g", "--format=%H", ref, "--"], cwd)
-    return _lines(result.stdout) if result.returncode == 0 else []
-
-
-def unreferenced_commits(revs: Sequence[str], cwd: Path) -> list[Commit]:
-    """Commits reachable from `revs` but from no ref, oldest first."""
-    if not revs:
-        return []
-    output = run_git(
-        "log",
-        "--ignore-missing",
-        "--reverse",
-        "--format=%H%x00%s",
-        *revs,
-        "--not",
-        "--all",
-        "--",
-        cwd=cwd,
-    )
-    return [Commit(*line.split("\0", 1)) for line in _lines(output)]
 
 
 def ref_exists(ref: str, cwd: Path) -> bool:
@@ -285,43 +260,6 @@ def tracked_files(paths: Sequence[str], cwd: Path) -> set[str]:
         return set()
     output = run_git("--literal-pathspecs", "ls-files", "-z", "--", *paths, cwd=cwd)
     return {path for path in output.split("\0") if path}
-
-
-def hidden_changes(cwd: Path) -> tuple[str, ...]:
-    """Tracked files marked skip-worktree or assume-unchanged whose content differs from the
-    index. `git status` doesn't report these, and `git worktree remove` deletes them.
-    """
-    output = run_git("ls-files", "-v", "-z", cwd=cwd)
-    flagged = [
-        entry[2:]
-        for entry in output.split("\0")
-        if entry and (entry[0] == "S" or entry[0].islower())
-    ]
-    on_disk = [path for path in flagged if (cwd / path).is_file()]
-    if not on_disk:
-        return ()
-    index = run_git("--literal-pathspecs", "ls-files", "-s", "-z", "--", *on_disk, cwd=cwd)
-    staged = {}
-    for entry in index.split("\0"):
-        if entry:
-            meta, path = entry.split("\t", 1)
-            staged[path] = meta.split(" ")[1]
-    hashes = _lines(run_git("hash-object", "--stdin-paths", cwd=cwd, input="\n".join(on_disk)))
-    return tuple(
-        path for path, sha in zip(on_disk, hashes, strict=True) if staged.get(path) != sha
-    )
-
-
-def populated_submodules(cwd: Path) -> tuple[str, ...]:
-    """Paths of submodules that are checked out in the worktree at `cwd`."""
-    output = run_git("ls-files", "-s", "-z", cwd=cwd)
-    paths = []
-    for entry in output.split("\0"):
-        if entry.startswith("160000 "):
-            path = entry.split("\t", 1)[1]
-            if os.path.lexists(cwd / path / ".git"):
-                paths.append(path)
-    return tuple(paths)
 
 
 def config_get_all(key: str, cwd: Path) -> list[str]:

@@ -395,7 +395,7 @@ def test_report_json_missing_worktree(in_sandbox):
 
     [candidate] = report_json("feat")["candidates"]
 
-    assert candidate["verdict"] == "review"
+    assert candidate["verdict"] == "delete"
     assert candidate["worktree"] == {
         "path": str(path),
         "head": in_sandbox.tip("feat"),
@@ -404,53 +404,7 @@ def test_report_json_missing_worktree(in_sandbox):
         "locked": False,
         "prunable": True,
     }
-    assert candidate["blockers"] == [
-        {
-            "code": "recent_activity",
-            "detail": "active within the last 7d (janitor.minAge)",
-            "min_age": "7d",
-        }
-    ]
-
-
-def test_report_json_nested_and_multiple_worktree_blockers(in_sandbox):
-    path = in_sandbox.add_worktree("outer", create=True)
-    (path / ".gitignore").write_text(".worktrees/\n")
-    in_sandbox.git("add", ".gitignore", cwd=path)
-    in_sandbox.git("commit", "-m", "Ignore worktrees", cwd=path)
-    in_sandbox.squash_merge(in_sandbox.open_pr("outer"))
-    in_sandbox.git("worktree", "add", "-q", "-b", "inner", str(path / ".worktrees/inner"), "main")
-    second = in_sandbox.root / "wt-outer-again"
-    in_sandbox.git("worktree", "add", "-q", "-f", str(second), "outer")
-
-    [candidate] = report_json("outer")["candidates"]
-
-    assert candidate["blockers"] == [
-        {
-            "code": "nested_worktree",
-            "detail": "1 other worktrees inside this worktree",
-            "paths": [".worktrees/inner"],
-        },
-        {
-            "code": "multiple_worktrees",
-            "detail": "checked out in 2 worktrees",
-            "paths": [str(path), str(second)],
-        },
-    ]
-
-
-def test_report_json_broken_worktree_blocker(in_sandbox):
-    path, _ = merged_branch_in_worktree(in_sandbox)
-    (path / ".git").unlink()
-
-    [candidate] = report_json("feat")["candidates"]
-
-    assert candidate["blockers"] == [
-        {
-            "code": "broken_worktree",
-            "detail": "the directory exists, but git no longer recognizes it as a worktree",
-        }
-    ]
+    assert candidate["blockers"] == []
 
 
 def test_clean_json_deleted(in_sandbox):
@@ -525,36 +479,6 @@ def test_report_json_repo_is_main_worktree(in_sandbox, monkeypatch):
     monkeypatch.chdir(path)
 
     assert report_json()["repo"] == str(in_sandbox.repo)
-
-
-def test_report_json_hidden_changes_and_submodule_blockers(in_sandbox):
-    path = in_sandbox.add_worktree("feat", create=True)
-    in_sandbox.commit(cwd=path)
-    in_sandbox.git(
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        "-q",
-        str(in_sandbox.origin),
-        "sub",
-        cwd=path,
-    )
-    in_sandbox.git("commit", "-q", "-m", "Add submodule", cwd=path)
-    in_sandbox.squash_merge(in_sandbox.open_pr("feat"))
-    in_sandbox.git("update-index", "--skip-worktree", "file2.txt", cwd=path)
-    (path / "file2.txt").write_text("local edit\n")
-
-    [candidate] = report_json("feat")["candidates"]
-
-    assert candidate["blockers"] == [
-        {
-            "code": "hidden_changes",
-            "detail": "1 files with changes hidden from git status",
-            "paths": ["file2.txt"],
-        },
-        {"code": "submodules", "detail": "1 populated submodules", "paths": ["sub"]},
-    ]
 
 
 def test_report_json_nested_repository_and_unreadable_blockers(
@@ -688,29 +612,6 @@ def test_clean_accept_rejects_unknown_blockers(in_sandbox):
 
     assert result.exit_code == 1
     assert "nonsense" in result.stderr
-
-
-def test_report_json_unreferenced_commits_and_live_upstream_blockers(in_sandbox):
-    in_sandbox.git("branch", "develop", "main")
-    in_sandbox.push("develop")
-    in_sandbox.add_commits("develop")
-    lost = in_sandbox.tip("develop")
-    in_sandbox.git("branch", "-f", "develop", "main")
-
-    [candidate] = report_json("develop")["candidates"]
-
-    assert candidate["blockers"] == [
-        {
-            "code": "unreferenced_commits",
-            "detail": "1 commits only in reflogs that deleting would discard",
-            "commits": [{"sha": lost, "subject": "Commit 2"}],
-        },
-        {
-            "code": "live_upstream",
-            "detail": "tracks origin/develop, which still exists",
-            "upstream": "origin/develop",
-        },
-    ]
 
 
 def test_report_json_without_recorded_activity(in_sandbox):

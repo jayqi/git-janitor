@@ -1,4 +1,3 @@
-from datetime import UTC, datetime, timedelta
 import shutil
 
 import pytest
@@ -142,20 +141,6 @@ def after_analysis(monkeypatch):
     return install
 
 
-def test_clean_keeps_branch_whose_worktree_got_new_commits(sandbox, after_analysis):
-    path = merged_branch_in_worktree(sandbox)
-    new_commits = []
-    after_analysis(lambda: new_commits.append(sandbox.commit(cwd=path)))
-
-    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
-
-    [outcome] = result.outcomes
-    assert outcome.outcome is Outcome.FAILED
-    assert "changed since the analysis" in outcome.detail
-    assert path.exists()
-    assert sandbox.tip("feat") == new_commits[0]
-
-
 def test_clean_keeps_branch_that_moved(sandbox, after_analysis):
     sandbox.new_branch("feat")
     sandbox.squash_merge(sandbox.open_pr("feat"))
@@ -222,24 +207,11 @@ def test_clean_rejects_targets_with_all(sandbox):
         clean(sandbox.repo, sandbox.github, targets=["feat"], all=True)
 
 
-def test_clean_keeps_worktree_that_switched_branches(sandbox, after_analysis):
-    path = merged_branch_in_worktree(sandbox)
-    after_analysis(lambda: sandbox.git("switch", "-q", "-c", "agent-task", cwd=path))
-
-    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
-
-    assert result.outcomes[0].outcome is Outcome.FAILED
-    assert "changed since the analysis" in result.outcomes[0].detail
-    assert path.exists()
-
-
-def test_clean_removes_branch_whose_worktree_directory_is_long_missing(sandbox):
+def test_clean_removes_branch_whose_worktree_directory_is_missing(sandbox):
     path = merged_branch_in_worktree(sandbox)
     shutil.rmtree(path)
 
-    result = clean(
-        sandbox.repo, sandbox.github, targets=["feat"], now=datetime.now(UTC) + timedelta(days=8)
-    )
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
 
     assert result.outcomes[0].outcome is Outcome.DELETED
     assert "feat" not in local_branches(sandbox)
@@ -268,24 +240,6 @@ def test_clean_reports_errors_and_continues(sandbox, after_analysis, monkeypatch
         ("second", Outcome.DELETED),
     ]
     assert "Permission denied" in result.outcomes[0].detail
-
-
-def test_clean_keeps_inactive_worktree_that_became_active(sandbox, after_analysis, monkeypatch):
-    path = sandbox.add_worktree("fresh", create=True)
-    later = datetime.now(UTC) + timedelta(days=8)
-
-    def use_worktree():
-        # Reflog times have one-second resolution, so make the new entry clearly later
-        monkeypatch.setenv("GIT_COMMITTER_DATE", (later - timedelta(days=1)).isoformat())
-        sandbox.git("reset", "-q", "HEAD", cwd=path)
-
-    after_analysis(use_worktree)
-
-    result = clean(sandbox.repo, sandbox.github, targets=["fresh"], now=later)
-
-    assert result.outcomes[0].outcome is Outcome.FAILED
-    assert "changed since the analysis" in result.outcomes[0].detail
-    assert path.exists()
 
 
 def worktree_with_plans(sandbox, global_excludes):
@@ -370,30 +324,3 @@ def test_clean_rejects_blockers_that_cannot_be_accepted(sandbox, code):
 def test_clean_rejects_accept_with_all(sandbox):
     with pytest.raises(ValueError, match="targets"):
         clean(sandbox.repo, sandbox.github, all=True, accept=[BlockerCode.STASHES])
-
-
-def test_clean_refuses_accepted_blockers_that_changed_after_analysis(
-    sandbox, global_excludes, after_analysis
-):
-    path = worktree_with_plans(sandbox, global_excludes)
-    after_analysis(lambda: (path / ".plans" / "new-plan.md").write_text("new\n"))
-
-    result = clean(
-        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.PRECIOUS_FILES]
-    )
-
-    [outcome] = result.outcomes
-    assert outcome.outcome is Outcome.FAILED
-    assert "precious_files changed since the analysis" in outcome.detail
-    assert (path / ".plans" / "new-plan.md").exists()
-
-
-def test_clean_accepting_unreferenced_commits(sandbox):
-    sandbox.new_branch("feat")
-    sandbox.git("branch", "-f", "feat", "main")
-
-    result = clean(
-        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.UNREFERENCED_COMMITS]
-    )
-
-    assert result.outcomes[0].outcome is Outcome.DELETED

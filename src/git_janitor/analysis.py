@@ -7,22 +7,17 @@ from git_janitor.model import (
     Action,
     Blocker,
     Branch,
-    BrokenWorktreeBlocker,
     Candidate,
     DeleteBranch,
     DirtyBlocker,
     ErrorBlocker,
     Evidence,
     ExtraCommits,
-    HiddenChangesBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
     IsMainBlocker,
-    LiveUpstreamBlocker,
     LockedBlocker,
-    MultipleWorktreesBlocker,
     NestedRepositoryBlocker,
-    NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequest,
     PullRequestEvidence,
@@ -33,9 +28,7 @@ from git_janitor.model import (
     Stash,
     StashesBlocker,
     Status,
-    SubmodulesBlocker,
     UnreadableBlocker,
-    UnreferencedCommitsBlocker,
     UntrackedBlocker,
     Worktree,
     parse_duration,
@@ -67,10 +60,10 @@ def analyze(
         git.fetch(REMOTE, cwd=repo)
     branches = git.list_branches(repo)
     worktrees = git.list_worktrees(repo)
-    worktrees_by_branch: dict[str, list[Worktree]] = {}
+    worktrees_by_branch: dict[str, Worktree] = {}
     for worktree in worktrees:
         if worktree.branch:
-            worktrees_by_branch.setdefault(worktree.branch, []).append(worktree)
+            worktrees_by_branch.setdefault(worktree.branch, worktree)
     stashes = git.list_stashes(repo)
     head_names = sorted({name for branch in branches for name in _head_names(branch)})
     detached_heads = sorted(
@@ -96,17 +89,8 @@ def analyze(
                 for pr in data.pull_requests.get(name, [])
             ]
             status, evidence = _classify_tip(branch.tip, prs, default_ref, default_branch, repo)
-        branch_worktrees = worktrees_by_branch.get(branch.name, [])
-        worktree = branch_worktrees[0] if branch_worktrees else None
-        blockers = _branch_blockers(branch, status, worktree, worktrees, stashes, cwd)
-        if len(branch_worktrees) > 1:
-            paths = tuple(str(wt.path) for wt in branch_worktrees)
-            blockers = (*blockers, MultipleWorktreesBlocker(paths=paths))
-        if status is Status.NO_UNIQUE_COMMITS:
-            blockers = (
-                *blockers,
-                *_no_unique_commits_blockers(branch, worktree, default_branch, repo),
-            )
+        worktree = worktrees_by_branch.get(branch.name)
+        blockers = _branch_blockers(branch, status, worktree, stashes, cwd)
         linked = worktree if worktree and not worktree.is_main else None
         last_activity = _latest(
             git.reflog_time(f"refs/heads/{branch.name}", cwd=repo),
@@ -147,12 +131,7 @@ def analyze(
                 branch=None,
                 worktree=worktree,
                 blockers=(
-                    *worktree_blockers(worktree, worktrees, cwd),
-                    *(
-                        _no_unique_commits_blockers(None, worktree, default_branch, repo)
-                        if status is Status.NO_UNIQUE_COMMITS
-                        else ()
-                    ),
+                    *worktree_blockers(worktree, cwd),
                     *_recent_activity(status, worktree, last_activity, now, min_age),
                 ),
                 evidence=evidence,
@@ -184,31 +163,6 @@ def _latest(*times: datetime | None) -> datetime | None:
     return max((t for t in times if t is not None), default=None)
 
 
-def _no_unique_commits_blockers(
-    branch: Branch | None, worktree: Worktree | None, default_branch: str, repo: Path
-) -> tuple[Blocker, ...]:
-    """Things a candidate with no commits of its own could still lose: commits that only its
-    reflogs remember, and the branch it tracks on origin.
-    """
-    revs = []
-    if branch:
-        revs += git.reflog_commits(f"refs/heads/{branch.name}", cwd=repo)
-    if worktree and worktree.admin_dir:
-        revs += git.reflog_commits(f"worktrees/{worktree.admin_dir.name}/HEAD", cwd=repo)
-    blockers: list[Blocker] = []
-    if commits := git.unreferenced_commits(list(dict.fromkeys(revs)), cwd=repo):
-        blockers.append(UnreferencedCommitsBlocker(commits=tuple(commits)))
-    if (
-        branch
-        and branch.upstream_remote == REMOTE
-        and branch.upstream_branch not in (None, default_branch)
-        and not branch.upstream_gone
-        and git.ref_exists(f"refs/remotes/{REMOTE}/{branch.upstream_branch}", cwd=repo)
-    ):
-        blockers.append(LiveUpstreamBlocker(upstream=str(branch.upstream)))
-    return tuple(blockers)
-
-
 def _recent_activity(
     status: Status,
     worktree: Worktree,
@@ -216,11 +170,10 @@ def _recent_activity(
     now: datetime,
     min_age: timedelta,
 ) -> tuple[Blocker, ...]:
-    """Protects linked worktrees that may be in use despite having nothing obvious to lose:
-    worktrees with no commits of their own, such as one an agent has just created, and
-    worktrees whose directory is missing, which may have been moved or be on an unmounted volume.
+    """Protects linked worktrees with no commits of their own that may be in use, such as one
+    an agent has just created.
     """
-    if status is not Status.NO_UNIQUE_COMMITS and worktree.path.exists():
+    if status is not Status.NO_UNIQUE_COMMITS:
         return ()
     if last_activity is not None and now - last_activity >= min_age:
         return ()
@@ -242,7 +195,6 @@ def _branch_blockers(
     branch: Branch,
     status: Status,
     worktree: Worktree | None,
-    worktrees: list[Worktree],
     stashes: list[Stash],
     cwd: Path,
 ) -> tuple[Blocker, ...]:
@@ -251,33 +203,27 @@ def _branch_blockers(
         if status is not Status.DEFAULT_BRANCH:
             blockers.append(IsMainBlocker())
     elif worktree:
-        blockers.extend(worktree_blockers(worktree, worktrees, cwd))
+        blockers.extend(worktree_blockers(worktree, cwd))
     branch_stashes = tuple(stash for stash in stashes if stash.branch == branch.name)
     if branch_stashes:
         blockers.append(StashesBlocker(stashes=branch_stashes))
     return tuple(blockers)
 
 
-def worktree_blockers(
-    worktree: Worktree, worktrees: list[Worktree], cwd: Path
-) -> tuple[Blocker, ...]:
-    """Blockers for removing a linked worktree. `worktrees` is every worktree of the repo.
+def worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
+    """Blockers for removing a linked worktree.
 
     A failure while checking becomes an error blocker rather than stopping the analysis.
     """
     try:
-        return _worktree_blockers(worktree, worktrees, cwd)
+        return _worktree_blockers(worktree, cwd)
     except (git.GitError, OSError, ValueError) as exc:
         return (ErrorBlocker(detail=str(exc)),)
 
 
-def _worktree_blockers(
-    worktree: Worktree, worktrees: list[Worktree], cwd: Path
-) -> tuple[Blocker, ...]:
+def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
     if not worktree.path.exists():
         return (LockedBlocker(),) if worktree.locked else ()
-    if worktree.prunable:
-        return (BrokenWorktreeBlocker(),)
     blockers: list[Blocker] = []
     if cwd.is_relative_to(worktree.path.resolve()):
         blockers.append(IsCurrentBlocker())
@@ -288,21 +234,9 @@ def _worktree_blockers(
     status = git.worktree_status(worktree.path)
     if status.changed:
         blockers.append(DirtyBlocker(paths=status.changed))
-    if hidden := git.hidden_changes(worktree.path):
-        blockers.append(HiddenChangesBlocker(paths=hidden))
     if status.untracked:
         blockers.append(UntrackedBlocker(paths=status.untracked))
-    if submodules := git.populated_submodules(worktree.path):
-        blockers.append(SubmodulesBlocker(paths=submodules))
-    nested = [
-        other.path
-        for other in worktrees
-        if other.path != worktree.path and other.path.is_relative_to(worktree.path)
-    ]
-    if nested:
-        paths = tuple(path.relative_to(worktree.path).as_posix() for path in nested)
-        blockers.append(NestedWorktreeBlocker(paths=paths))
-    scan = scan_ignored(worktree.path, status.ignored, skip=nested)
+    scan = scan_ignored(worktree.path, status.ignored)
     if scan.nested_repositories:
         blockers.append(NestedRepositoryBlocker(paths=scan.nested_repositories))
     if scan.precious_files:
@@ -347,8 +281,6 @@ def _classify_tip(
             case _:
                 return Status.PR_CLOSED, pr_evidence
     if in_default:
-        if any(pr.state is PullRequestState.OPEN for pr in prs):
-            return Status.PR_OPEN, pr_evidence
         return Status.NO_UNIQUE_COMMITS, pr_evidence
 
     # Pull requests whose head the tip has moved beyond

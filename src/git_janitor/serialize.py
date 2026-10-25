@@ -12,22 +12,16 @@ from git_janitor.model import (
     DirtyBlocker,
     Evidence,
     ExtraCommits,
-    HiddenChangesBlocker,
     InProgressOpBlocker,
-    LiveUpstreamBlocker,
-    MultipleWorktreesBlocker,
     NestedRepositoryBlocker,
-    NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequestEvidence,
     RecentActivityBlocker,
     RemoveWorktree,
     Report,
     StashesBlocker,
-    SubmodulesBlocker,
     TargetOutcome,
     UnreadableBlocker,
-    UnreferencedCommitsBlocker,
     UntrackedBlocker,
     format_duration,
 )
@@ -90,10 +84,6 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
         case (
             DirtyBlocker(paths=paths)
             | UntrackedBlocker(paths=paths)
-            | NestedWorktreeBlocker(paths=paths)
-            | MultipleWorktreesBlocker(paths=paths)
-            | HiddenChangesBlocker(paths=paths)
-            | SubmodulesBlocker(paths=paths)
             | NestedRepositoryBlocker(paths=paths)
             | UnreadableBlocker(paths=paths)
         ):
@@ -104,10 +94,6 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
             ]
         case InProgressOpBlocker(operation=operation):
             result["operation"] = operation
-        case UnreferencedCommitsBlocker(commits=commits):
-            result["commits"] = [{"sha": c.sha, "subject": c.subject} for c in commits]
-        case LiveUpstreamBlocker(upstream=upstream):
-            result["upstream"] = upstream
         case RecentActivityBlocker(min_age=min_age):
             result["min_age"] = format_duration(min_age)
         case StashesBlocker(stashes=stashes):

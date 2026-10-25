@@ -127,16 +127,9 @@ class BlockerCode(StrEnum):
     IS_CURRENT = "is_current"
     IS_MAIN = "is_main"
     STASHES = "stashes"
-    NESTED_WORKTREE = "nested_worktree"
-    MULTIPLE_WORKTREES = "multiple_worktrees"
-    BROKEN_WORKTREE = "broken_worktree"
-    HIDDEN_CHANGES = "hidden_changes"
-    SUBMODULES = "submodules"
     NESTED_REPOSITORY = "nested_repository"
     UNREADABLE = "unreadable"
     RECENT_ACTIVITY = "recent_activity"
-    UNREFERENCED_COMMITS = "unreferenced_commits"
-    LIVE_UPSTREAM = "live_upstream"
     ERROR = "error"
 
 
@@ -210,54 +203,6 @@ class StashesBlocker:
 
 
 @dataclass(frozen=True, slots=True)
-class NestedWorktreeBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.NESTED_WORKTREE
-    paths: tuple[str, ...]
-    """Paths of the nested worktrees, relative to this worktree's root."""
-
-    @property
-    def detail(self) -> str:
-        return f"{len(self.paths)} other worktrees inside this worktree"
-
-
-@dataclass(frozen=True, slots=True)
-class MultipleWorktreesBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.MULTIPLE_WORKTREES
-    paths: tuple[str, ...]
-
-    @property
-    def detail(self) -> str:
-        return f"checked out in {len(self.paths)} worktrees"
-
-
-@dataclass(frozen=True, slots=True)
-class BrokenWorktreeBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.BROKEN_WORKTREE
-    detail: ClassVar[str] = "the directory exists, but git no longer recognizes it as a worktree"
-
-
-@dataclass(frozen=True, slots=True)
-class HiddenChangesBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.HIDDEN_CHANGES
-    paths: tuple[str, ...]
-    """Tracked files marked skip-worktree or assume-unchanged that differ from the index."""
-
-    @property
-    def detail(self) -> str:
-        return f"{len(self.paths)} files with changes hidden from git status"
-
-
-@dataclass(frozen=True, slots=True)
-class SubmodulesBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.SUBMODULES
-    paths: tuple[str, ...]
-
-    @property
-    def detail(self) -> str:
-        return f"{len(self.paths)} populated submodules"
-
-
-@dataclass(frozen=True, slots=True)
 class NestedRepositoryBlocker:
     code: ClassVar[BlockerCode] = BlockerCode.NESTED_REPOSITORY
     paths: tuple[str, ...]
@@ -290,27 +235,6 @@ class RecentActivityBlocker:
 
 
 @dataclass(frozen=True, slots=True)
-class UnreferencedCommitsBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.UNREFERENCED_COMMITS
-    commits: tuple[Commit, ...]
-    """Commits in the branch's or worktree's reflogs that no branch, tag, or remote branch has."""
-
-    @property
-    def detail(self) -> str:
-        return f"{len(self.commits)} commits only in reflogs that deleting would discard"
-
-
-@dataclass(frozen=True, slots=True)
-class LiveUpstreamBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.LIVE_UPSTREAM
-    upstream: str
-
-    @property
-    def detail(self) -> str:
-        return f"tracks {self.upstream}, which still exists"
-
-
-@dataclass(frozen=True, slots=True)
 class ErrorBlocker:
     """Checking the worktree failed, so whether anything would be lost is unknown."""
 
@@ -327,16 +251,9 @@ type Blocker = (
     | IsCurrentBlocker
     | IsMainBlocker
     | StashesBlocker
-    | NestedWorktreeBlocker
-    | MultipleWorktreesBlocker
-    | BrokenWorktreeBlocker
-    | HiddenChangesBlocker
-    | SubmodulesBlocker
     | NestedRepositoryBlocker
     | UnreadableBlocker
     | RecentActivityBlocker
-    | UnreferencedCommitsBlocker
-    | LiveUpstreamBlocker
     | ErrorBlocker
 )
 
@@ -395,8 +312,6 @@ ACCEPTABLE_BLOCKERS = frozenset(
         BlockerCode.PRECIOUS_FILES,
         BlockerCode.STASHES,
         BlockerCode.RECENT_ACTIVITY,
-        BlockerCode.UNREFERENCED_COMMITS,
-        BlockerCode.LIVE_UPSTREAM,
     }
 )
 """Blockers that `clean` can be told to accept. `git worktree remove` doesn't check these."""

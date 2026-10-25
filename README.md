@@ -53,7 +53,7 @@ The default branch comes from GitHub.
 |---|---|
 | `merged` | A matching pull request was merged into the default branch. |
 | `merged_plus_local` | A pull request merged into the default branch, but the local tip has commits beyond its head. |
-| `pr_open` | A matching pull request is open, an open pull request's head is behind the local tip, or the tip is already in the default branch and a pull request with the branch's name is open. Any open matching pull request takes precedence over closed or merged ones. |
+| `pr_open` | A matching pull request is open, or an open pull request's head is behind the local tip. Any open matching pull request takes precedence over closed or merged ones. |
 | `pr_closed` | A matching pull request was closed without merging. |
 | `merged_into_other_base` | A matching pull request was merged into a branch other than the default branch. |
 | `no_unique_commits` | No matching pull request, and the tip is already in the default branch, so deleting it loses no commits. This includes branches created but not yet committed to, and branches fast-forwarded to the default branch. |
@@ -93,21 +93,14 @@ Any blocker downgrades a `merged` or `no_unique_commits` candidate to `review`.
 | `is_current` | The current directory is inside the worktree. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
 | `stashes` | There are stash entries made on this branch. |
-| `nested_worktree` | Other worktrees are inside this worktree's directory, so removing it would delete them too. |
-| `multiple_worktrees` | The branch is checked out in more than one worktree (with `git worktree add --force`). |
-| `broken_worktree` | The worktree's directory exists, but git no longer recognizes it as a worktree, for example because its `.git` file was deleted. |
-| `hidden_changes` | Tracked files marked `--skip-worktree` or `--assume-unchanged` differ from the index. `git status` doesn't show these changes. |
-| `submodules` | The worktree has populated submodules, which `git worktree remove` refuses to remove. |
 | `nested_repository` | A git repository is inside an ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
-| `recent_activity` | The worktree was active within `janitor.minAge` (see below), or has no recorded activity. Applies to `no_unique_commits` worktrees, which an agent may have just created, and to any worktree whose directory is missing, which may have been moved or be on an unmounted volume. |
-| `unreferenced_commits` | For `no_unique_commits` candidates: commits in the branch's or worktree's reflogs that no branch, tag, or remote branch has, such as work discarded with `git reset --hard`. Deleting would lose the reflogs that remember them. |
-| `live_upstream` | For `no_unique_commits` branches: the branch tracks a branch on origin, other than the default branch, that still exists. |
+| `recent_activity` | A `no_unique_commits` worktree, which an agent may have just created, was active within `janitor.minAge` (see below), or has no recorded activity. |
 | `error` | Checking the worktree failed. `detail` has the error. |
 
 ### Activity
 
-Each candidate's `last_activity` is the latest of its branch's reflog, its linked worktree's HEAD reflog, and when its linked worktree was created. These are read from git's records for the worktree, so they work when the worktree's directory is missing, and ordinary commands like `git status` don't change them. Activity in the main worktree isn't included. `no_unique_commits` worktrees and worktrees whose directory is missing only get the `delete` verdict once they've been inactive for `janitor.minAge`, 7 days by default:
+Each candidate's `last_activity` is the latest of its branch's reflog, its linked worktree's HEAD reflog, and when its linked worktree was created. These are read from git's records for the worktree, so they work when the worktree's directory is missing, and ordinary commands like `git status` don't change them. Activity in the main worktree isn't included. `no_unique_commits` worktrees only get the `delete` verdict once they've been inactive for `janitor.minAge`, 7 days by default:
 
 ```sh
 git config --global janitor.minAge 3d   # or 12h, 30m, 0
@@ -123,7 +116,7 @@ git config --global janitor.minAge 3d   # or 12h, 30m, 0
 - Common operating-system and editor files are always disposable, even when matched by your global excludes: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `.idea/`, `.vscode/`, `*~`. Editor swap files like `*.swp` are not, since they may hold unsaved changes.
 - Anything git-janitor can't attribute to an ignore rule is precious.
 
-Git repositories anywhere in ignored directories, including disposable ones other than cache directories, are reported as `nested_repository`, and other worktrees as `nested_worktree`, rather than file by file.
+Git repositories and other worktrees inside ignored directories are reported as `nested_repository` rather than file by file, unless they're in a cache directory or one with a disposable name.
 
 To mark more patterns as disposable, add them to git config. Each pattern is matched against single file and directory names, so a pattern containing `/` never matches.
 
@@ -186,7 +179,7 @@ git config --global --add janitor.disposable '.envrc'
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
 - `repo` is the path of the main worktree, wherever the command was run from.
-- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (relative to the worktree for `dirty`, `untracked`, `hidden_changes`, `submodules`, `nested_worktree`, `nested_repository`, and `unreadable`; absolute for `multiple_worktrees`), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), `stashes` (`stashes`, each with `ref` and `subject`), `commits` (`unreferenced_commits`, each with `sha` and `subject`), `upstream` (`live_upstream`), or `min_age` (`recent_activity`, like `7d`).
+- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (relative to the worktree, for `dirty`, `untracked`, `nested_repository`, and `unreadable`), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), `stashes` (`stashes`, each with `ref` and `subject`), or `min_age` (`recent_activity`, like `7d`).
 - `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit, newest first, whether or not they matched. When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), it also holds an `extra_commits` entry with that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
 - `actions` lists, in order, what `clean` would do.
 - `last_activity` is an ISO 8601 time, or `null` if git has no record of activity.
@@ -220,8 +213,8 @@ git config --global --add janitor.disposable '.envrc'
 `git janitor clean` takes candidate ids, or `--all` for every candidate whose verdict is `delete`. Running it with neither, or with both, is an error.
 
 - It always re-runs the analysis and refuses any target whose verdict isn't `delete`. There is no option to force it.
-- `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them. Only blockers that `git worktree remove` doesn't check, and that removing doesn't make fail, can be accepted: `precious_files`, `stashes`, `recent_activity`, `unreferenced_commits`, and `live_upstream`. For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. `--accept` can't be combined with `--all`. Outcomes list the accepted blockers in full, with the same fields as in the report, in `accepted`, and keep the candidate's own `verdict`.
-- Right before removing a worktree, it checks again that the worktree's HEAD commit and branch are unchanged, that it hasn't been active since the analysis, and that it has no blockers other than accepted ones, which must be unchanged from the analysis. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
+- `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them. Only blockers that `git worktree remove` doesn't check, and that removing doesn't make fail, can be accepted: `precious_files`, `stashes`, and `recent_activity`. For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. `--accept` can't be combined with `--all`. Outcomes list the accepted blockers in full, with the same fields as in the report, in `accepted`, and keep the candidate's own `verdict`.
+- Right before removing a worktree, it checks again that the worktree has no blockers other than accepted ones. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
 - It removes the worktree with `git worktree remove` (without `--force`), then deletes the branch and its `branch.<name>` config.
 - It only touches local branches and worktrees. It never deletes anything on GitHub.
 - It prints the tip commit of each deleted branch and a command to recreate it, such as `git branch feat-x 4f1c0de`. This works until git garbage-collects the commit.

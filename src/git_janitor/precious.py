@@ -33,13 +33,14 @@ class IgnoredScan:
     unreadable: tuple[str, ...]
 
 
-def scan_ignored(worktree: Path, ignored: Sequence[str], skip: Sequence[Path] = ()) -> IgnoredScan:
+def scan_ignored(worktree: Path, ignored: Sequence[str]) -> IgnoredScan:
     """Find what would be lost among a worktree's ignored paths, as listed by
-    `git.worktree_status`. Directories in `skip` aren't searched.
+    `git.worktree_status`.
 
     An ignored path is disposable if a committed `.gitignore` matched it, if it's in a cache
     directory, or if its name matches a disposable pattern. Anything else is precious. Git
-    repositories nested anywhere in ignored paths are reported, as are paths that can't be read.
+    repositories nested in ignored paths that aren't disposable by name or in a cache directory
+    are reported, as are paths that can't be read.
     """
     if not ignored:
         return IgnoredScan(precious_files=(), nested_repositories=(), unreadable=())
@@ -51,7 +52,7 @@ def scan_ignored(worktree: Path, ignored: Sequence[str], skip: Sequence[Path] = 
         [source for source in set(sources.values()) if not Path(source).is_absolute()],
         cwd=worktree,
     )
-    scan = _Scan(worktree, patterns, set(skip))
+    scan = _Scan(worktree, patterns)
     for entry in ignored:
         source = sources.get(entry)
         committed = source is not None and _is_committed_gitignore(source, tracked)
@@ -68,28 +69,23 @@ def _is_committed_gitignore(source: str, tracked: set[str]) -> bool:
 
 
 class _Scan:
-    def __init__(self, worktree: Path, patterns: tuple[str, ...], skip: set[Path]) -> None:
+    def __init__(self, worktree: Path, patterns: tuple[str, ...]) -> None:
         self.worktree = worktree
         self.patterns = patterns
-        self.skip = skip
         self.files: list[PreciousFile] = []
         self.repositories: list[str] = []
         self.unreadable: list[str] = []
 
     def add(self, path: Path, *, list_files: bool) -> None:
-        """Scan an ignored path, listing its files as precious if `list_files`.
-
-        Disposable-named files aren't listed, but disposable-named directories are still
-        searched for repositories. Cache directories aren't searched at all.
-        """
-        if any(
+        """Scan an ignored path, listing its files as precious if `list_files`."""
+        if self._is_disposable(path) or any(
             _is_cache_directory(parent)
             for parent in path.parents
             if parent.is_relative_to(self.worktree)
         ):
             return
         if path.is_symlink() or not path.is_dir():
-            if list_files and not self._is_disposable(path):
+            if list_files:
                 self._add_file(path)
             return
         if not self._enter(path):
@@ -107,9 +103,7 @@ class _Scan:
 
     def _enter(self, directory: Path) -> bool:
         """Whether to search `directory`. Records it if it's a repository."""
-        if directory in self.skip:
-            return False
-        if _is_cache_directory(directory):
+        if self._is_disposable(directory) or _is_cache_directory(directory):
             return False
         if os.path.lexists(directory / ".git"):
             self.repositories.append(self._relative(directory))

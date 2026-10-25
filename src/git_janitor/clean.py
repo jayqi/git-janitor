@@ -107,7 +107,7 @@ def _clean_candidate(
     done: list[Action] = []
     for action in candidate.actions:
         try:
-            _execute(action, candidate, repo, cwd, accept)
+            _execute(action, repo, cwd, accept)
         except (git.GitError, ChangedSinceAnalysisError, OSError) as exc:
             return outcome(Outcome.FAILED, str(exc), done)
         except Exception as exc:  # Keep going, so earlier targets' recovery commands are reported
@@ -116,38 +116,17 @@ def _clean_candidate(
     return outcome(Outcome.DELETED, done=done)
 
 
-def _execute(
-    action: Action,
-    candidate: Candidate,
-    repo: Path,
-    cwd: Path,
-    accept: frozenset[BlockerCode],
-) -> None:
+def _execute(action: Action, repo: Path, cwd: Path, accept: frozenset[BlockerCode]) -> None:
     worktrees = git.list_worktrees(repo)
     match action:
         case RemoveWorktree(path=path):
             current = next((wt for wt in worktrees if wt.path == path), None)
-            if current is None or candidate.worktree is None:
+            if current is None:
                 raise ChangedSinceAnalysisError(f"{path} is no longer a worktree")
-            if (current.head, current.branch) != (
-                candidate.worktree.head,
-                candidate.worktree.branch,
-            ):
-                raise ChangedSinceAnalysisError(f"HEAD of {path} changed since the analysis")
-            activity = git.worktree_activity(current, repo)
-            if activity and (
-                candidate.last_activity is None or activity > candidate.last_activity
-            ):
-                raise ChangedSinceAnalysisError(f"{path} changed since the analysis")
-            blockers = worktree_blockers(current, worktrees, cwd)
+            blockers = worktree_blockers(current, cwd)
             if unaccepted := [b for b in blockers if b.code not in accept]:
                 found = "; ".join(f"{b.code} ({b.detail})" for b in unaccepted)
                 raise ChangedSinceAnalysisError(f"{path} has new blockers: {found}")
-            for blocker in blockers:
-                if blocker not in candidate.blockers:
-                    raise ChangedSinceAnalysisError(
-                        f"{path}: {blocker.code} changed since the analysis"
-                    )
             git.run_git("worktree", "remove", str(path), cwd=repo)
         case DeleteBranch(name=name, tip=tip):
             if any(wt.branch == name for wt in worktrees):
