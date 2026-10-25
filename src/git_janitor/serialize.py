@@ -2,34 +2,38 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
-from git_janitor.analysis import (
+from git_janitor.clean import CleanResult, TargetOutcome
+from git_janitor.model import (
     Action,
     Blocker,
     Candidate,
     DeleteBranch,
+    DirtyBlocker,
     Evidence,
     ExtraCommits,
+    InProgressOpBlocker,
+    PreciousFilesBlocker,
     PullRequestEvidence,
     RemoveWorktree,
     Report,
+    StashesBlocker,
+    UntrackedBlocker,
 )
-from git_janitor.clean import CleanResult, TargetOutcome
 
 SCHEMA_VERSION = 1
 
 
-def report_to_dict(report: Report, candidates: list[Candidate] | None = None) -> dict[str, Any]:
+def report_to_dict(report: Report, candidates: Sequence[Candidate]) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "repo": str(report.repo),
         "github_repo": report.github_repo,
         "default_branch": report.default_branch,
         "fetched": report.fetched,
-        "candidates": [
-            candidate_to_dict(c) for c in (report.candidates if candidates is None else candidates)
-        ],
+        "candidates": [candidate_to_dict(c) for c in candidates],
     }
 
 
@@ -59,7 +63,7 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         and {
             "path": str(worktree.path),
             "head": worktree.head,
-            "detached": worktree.branch is None,
+            "detached": worktree.detached,
             "is_main": worktree.is_main,
             "locked": worktree.locked,
             "prunable": worktree.prunable,
@@ -72,15 +76,17 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
 
 def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
     result: dict[str, Any] = {"code": str(blocker.code), "detail": blocker.detail}
-    if blocker.paths:
-        result["paths"] = list(blocker.paths)
-    if blocker.files:
-        result["files"] = [
-            {"path": f.path, "size": f.size, "modified": f.modified.isoformat()}
-            for f in blocker.files
-        ]
-    if blocker.stashes:
-        result["stashes"] = [{"ref": s.ref, "subject": s.subject} for s in blocker.stashes]
+    match blocker:
+        case DirtyBlocker(paths=paths) | UntrackedBlocker(paths=paths):
+            result["paths"] = list(paths)
+        case PreciousFilesBlocker(files=files):
+            result["files"] = [
+                {"path": f.path, "size": f.size, "modified": f.modified.isoformat()} for f in files
+            ]
+        case InProgressOpBlocker(operation=operation):
+            result["operation"] = operation
+        case StashesBlocker(stashes=stashes):
+            result["stashes"] = [{"ref": s.ref, "subject": s.subject} for s in stashes]
     return result
 
 
@@ -119,5 +125,5 @@ def outcome_to_dict(outcome: TargetOutcome) -> dict[str, Any]:
         "verdict": outcome.verdict and str(outcome.verdict),
         "detail": outcome.detail,
         "actions": [action_to_dict(a) for a in outcome.actions],
-        "recovery": outcome.recovery,
+        "recovery": list(outcome.recovery),
     }

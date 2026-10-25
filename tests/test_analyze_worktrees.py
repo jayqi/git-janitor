@@ -1,12 +1,19 @@
 import shutil
 
-from git_janitor.analysis import (
-    BlockerCode,
+from git_janitor.analysis import analyze
+from git_janitor.model import (
     DeleteBranch,
+    DirtyBlocker,
+    InProgressOpBlocker,
+    IsCurrentBlocker,
+    IsMainBlocker,
+    LockedBlocker,
+    PreciousFilesBlocker,
     RemoveWorktree,
+    StashesBlocker,
     Status,
+    UntrackedBlocker,
     Verdict,
-    analyze,
 )
 
 
@@ -27,15 +34,15 @@ def test_merged_branch_in_clean_worktree_is_deletable(sandbox):
     assert candidate.status is Status.MERGED
     assert candidate.verdict is Verdict.DELETE
     assert candidate.worktree.path == path
-    assert candidate.blockers == []
-    assert candidate.actions == [
+    assert candidate.blockers == ()
+    assert candidate.actions == (
         RemoveWorktree(path=path),
         DeleteBranch(name="feat", tip=sandbox.tip("feat")),
-    ]
+    )
 
 
-def blocker(candidate, code):
-    [found] = [b for b in candidate.blockers if b.code is code]
+def blocker(candidate, kind):
+    [found] = [b for b in candidate.blockers if isinstance(b, kind)]
     return found
 
 
@@ -47,7 +54,7 @@ def test_worktree_with_modified_files_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.DIRTY).paths == ("file1.txt",)
+    assert blocker(candidate, DirtyBlocker).paths == ("file1.txt",)
 
 
 def test_worktree_with_untracked_files_needs_review(sandbox):
@@ -59,7 +66,7 @@ def test_worktree_with_untracked_files_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.UNTRACKED).paths == ("notes/todo.txt",)
+    assert blocker(candidate, UntrackedBlocker).paths == ("notes/todo.txt",)
 
 
 def test_ignored_files_from_global_excludes_are_precious(sandbox, global_excludes):
@@ -81,7 +88,7 @@ def test_ignored_files_from_global_excludes_are_precious(sandbox, global_exclude
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    files = blocker(candidate, BlockerCode.PRECIOUS_FILES).files
+    files = blocker(candidate, PreciousFilesBlocker).files
     assert [(f.path, f.size) for f in files] == [(".plans/plan.md", 5), (".plans/sub/notes.md", 7)]
 
 
@@ -94,7 +101,7 @@ def test_ignored_files_from_info_exclude_are_precious(sandbox):
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    files = blocker(candidate, BlockerCode.PRECIOUS_FILES).files
+    files = blocker(candidate, PreciousFilesBlocker).files
     assert [f.path for f in files] == ["scratch.txt"]
 
 
@@ -107,7 +114,7 @@ def test_configured_disposable_patterns_are_not_precious(sandbox, global_exclude
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    assert candidate.blockers == []
+    assert candidate.blockers == ()
     assert candidate.verdict is Verdict.DELETE
 
 
@@ -119,7 +126,7 @@ def test_locked_worktree_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.LOCKED)
+    assert blocker(candidate, LockedBlocker)
 
 
 def test_worktree_with_merge_in_progress_needs_review(sandbox):
@@ -131,7 +138,7 @@ def test_worktree_with_merge_in_progress_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.IN_PROGRESS_OP).detail == "merge in progress"
+    assert blocker(candidate, InProgressOpBlocker).operation == "merge"
 
 
 def test_worktree_containing_current_directory_needs_review(sandbox):
@@ -141,7 +148,7 @@ def test_worktree_containing_current_directory_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.IS_CURRENT)
+    assert blocker(candidate, IsCurrentBlocker)
 
 
 def test_merged_branch_checked_out_in_main_worktree_needs_review(sandbox):
@@ -154,8 +161,8 @@ def test_merged_branch_checked_out_in_main_worktree_needs_review(sandbox):
     candidate = report.candidate("feat")
     assert candidate.status is Status.MERGED
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, BlockerCode.IS_MAIN)
-    assert candidate.actions == [DeleteBranch(name="feat", tip=sandbox.tip("feat"))]
+    assert blocker(candidate, IsMainBlocker)
+    assert candidate.actions == (DeleteBranch(name="feat", tip=sandbox.tip("feat")),)
 
 
 def test_branch_with_stashes_needs_review(sandbox):
@@ -170,7 +177,7 @@ def test_branch_with_stashes_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    [stash] = blocker(candidate, BlockerCode.STASHES).stashes
+    [stash] = blocker(candidate, StashesBlocker).stashes
     assert stash.ref == "stash@{0}"
     assert stash.subject == "On feat: half-done idea"
 
@@ -185,7 +192,7 @@ def test_detached_worktree_is_its_own_candidate(sandbox):
     assert candidate.worktree.path == path
     assert candidate.status is Status.NO_UNIQUE_COMMITS
     assert candidate.verdict is Verdict.REVIEW
-    assert candidate.actions == [RemoveWorktree(path=path)]
+    assert candidate.actions == (RemoveWorktree(path=path),)
 
 
 def test_detached_worktree_with_new_commits_has_no_pr(sandbox):
@@ -206,10 +213,10 @@ def test_merged_branch_in_missing_worktree_is_deletable(sandbox):
     candidate = report.candidate("feat")
     assert candidate.worktree.prunable
     assert candidate.verdict is Verdict.DELETE
-    assert candidate.actions == [
+    assert candidate.actions == (
         RemoveWorktree(path=path),
         DeleteBranch(name="feat", tip=sandbox.tip("feat")),
-    ]
+    )
 
 
 def test_linked_worktree_on_default_branch_needs_review(sandbox):
@@ -222,4 +229,4 @@ def test_linked_worktree_on_default_branch_needs_review(sandbox):
     candidate = report.candidate("main")
     assert candidate.status is Status.DEFAULT_BRANCH
     assert candidate.verdict is Verdict.REVIEW
-    assert candidate.actions == [RemoveWorktree(path=path)]
+    assert candidate.actions == (RemoveWorktree(path=path),)

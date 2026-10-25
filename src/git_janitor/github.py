@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
 import itertools
 import json
 import re
@@ -10,28 +9,14 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
+from git_janitor.model import PullRequest, PullRequestState
+
 
 class GitHubError(RuntimeError):
     pass
 
 
-class PullRequestState(StrEnum):
-    OPEN = "OPEN"
-    CLOSED = "CLOSED"
-    MERGED = "MERGED"
-
-
-@dataclass(frozen=True)
-class PullRequest:
-    number: int
-    url: str
-    state: PullRequestState
-    base: str
-    head_name: str
-    head_oid: str
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GitHubData:
     name_with_owner: str
     default_branch: str

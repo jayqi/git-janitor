@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from git_janitor import git
-from git_janitor.analysis import (
-    Action,
-    Candidate,
-    DeleteBranch,
-    RemoveWorktree,
-    Report,
-    Verdict,
-    analyze,
-)
+from git_janitor.analysis import analyze
 from git_janitor.github import GitHubClient
+from git_janitor.model import Action, Candidate, DeleteBranch, RemoveWorktree, Report, Verdict
 
 
 class Outcome(StrEnum):
@@ -26,20 +19,22 @@ class Outcome(StrEnum):
     FAILED = "failed"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class TargetOutcome:
     id: str
     outcome: Outcome
     verdict: Verdict | None = None
     detail: str = ""
-    actions: list[Action] = field(default_factory=list)
-    recovery: list[str] = field(default_factory=list)
+    actions: tuple[Action, ...] = ()
+    """The candidate's planned actions."""
+    recovery: tuple[str, ...] = ()
+    """Commands that restore what the completed actions made unreachable."""
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CleanResult:
     report: Report
-    outcomes: list[TargetOutcome]
+    outcomes: tuple[TargetOutcome, ...]
 
     @property
     def ok(self) -> bool:
@@ -62,11 +57,14 @@ def clean(
     cwd = (cwd or Path.cwd()).resolve()
     report = analyze(repo, github, fetch=fetch, cwd=cwd)
 
-    outcomes = []
     if all:
-        selected = [c for c in report.candidates if c.verdict is Verdict.DELETE]
+        outcomes = [
+            _clean_candidate(candidate, repo, dry_run=dry_run)
+            for candidate in report.candidates
+            if candidate.verdict is Verdict.DELETE
+        ]
     else:
-        selected = []
+        outcomes = []
         for target in targets:
             candidate = report.find(target, cwd=cwd)
             if candidate is None:
@@ -74,51 +72,50 @@ def clean(
                     TargetOutcome(id=target, outcome=Outcome.NOT_FOUND, detail="no such candidate")
                 )
             else:
-                selected.append(candidate)
-
-    for candidate in selected:
-        outcomes.append(_clean_candidate(candidate, repo, dry_run=dry_run))
-    return CleanResult(report=report, outcomes=outcomes)
+                outcomes.append(_clean_candidate(candidate, repo, dry_run=dry_run))
+    return CleanResult(report=report, outcomes=tuple(outcomes))
 
 
 def _clean_candidate(candidate: Candidate, repo: Path, *, dry_run: bool) -> TargetOutcome:
-    outcome = TargetOutcome(
-        id=candidate.id,
-        outcome=Outcome.WOULD_DELETE if dry_run else Outcome.DELETED,
-        verdict=candidate.verdict,
-        actions=candidate.actions,
-        recovery=_recovery(candidate),
-    )
-    if candidate.verdict is not Verdict.DELETE:
-        outcome.outcome = Outcome.REFUSED
-        outcome.detail = f"verdict is {candidate.verdict}, not delete"
-        outcome.recovery = []
-        return outcome
-    if dry_run:
-        return outcome
+    def outcome(outcome: Outcome, detail: str = "", done: Sequence[Action] = ()) -> TargetOutcome:
+        return TargetOutcome(
+            id=candidate.id,
+            outcome=outcome,
+            verdict=candidate.verdict,
+            detail=detail,
+            actions=candidate.actions,
+            recovery=_recovery(candidate, done),
+        )
 
+    if candidate.verdict is not Verdict.DELETE:
+        return outcome(Outcome.REFUSED, f"verdict is {candidate.verdict}, not delete")
+    if dry_run:
+        return outcome(Outcome.WOULD_DELETE, done=candidate.actions)
+
+    done: list[Action] = []
     for action in candidate.actions:
         try:
-            match action:
-                case RemoveWorktree(path=path):
-                    git.run_git("worktree", "remove", str(path), cwd=repo)
-                case DeleteBranch(name=name):
-                    git.run_git("branch", "-D", name, cwd=repo)
+            _execute(action, repo)
         except git.GitError as exc:
-            outcome.outcome = Outcome.FAILED
-            outcome.detail = str(exc)
-            break
-    return outcome
+            return outcome(Outcome.FAILED, str(exc), done)
+        done.append(action)
+    return outcome(Outcome.DELETED, done=done)
 
 
-def _recovery(candidate: Candidate) -> list[str]:
-    """Commands that restore the commits a candidate's actions make unreachable."""
+def _execute(action: Action, repo: Path) -> None:
+    match action:
+        case RemoveWorktree(path=path):
+            git.run_git("worktree", "remove", str(path), cwd=repo)
+        case DeleteBranch(name=name):
+            git.run_git("branch", "-D", name, cwd=repo)
+
+
+def _recovery(candidate: Candidate, done: Sequence[Action]) -> tuple[str, ...]:
     commands = []
-    for action in candidate.actions:
+    for action in done:
         match action:
             case DeleteBranch(name=name, tip=tip):
                 commands.append(f"git branch {name} {tip}")
-            case RemoveWorktree(path=path) if candidate.branch is None:
-                assert candidate.worktree is not None
+            case RemoveWorktree(path=path) if candidate.worktree and candidate.worktree.detached:
                 commands.append(f"git worktree add --detach {path} {candidate.worktree.head}")
-    return commands
+    return tuple(commands)

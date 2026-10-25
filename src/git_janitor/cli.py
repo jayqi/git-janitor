@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 import os
 from pathlib import Path
@@ -10,9 +11,10 @@ from rich.table import Table
 import typer
 
 from git_janitor import git
-from git_janitor.analysis import Candidate, PullRequestEvidence, Verdict, analyze
-from git_janitor.clean import CleanResult, Outcome, clean
+from git_janitor.analysis import analyze
+from git_janitor.clean import CleanResult, clean
 from git_janitor.github import GhGitHubClient, GitHubClient, GitHubError
+from git_janitor.model import Candidate, PullRequestEvidence, Verdict
 from git_janitor.serialize import clean_result_to_dict, report_to_dict
 
 app = typer.Typer(
@@ -113,7 +115,7 @@ def clean_command(
         raise typer.Exit(code=1)
 
 
-def candidates_table(candidates: list[Candidate]) -> Table:
+def candidates_table(candidates: Sequence[Candidate]) -> Table:
     table = Table()
     for column in ("Candidate", "Verdict", "Status", "Worktree", "Blockers", "Pull request"):
         table.add_column(column, overflow="fold")
@@ -141,8 +143,7 @@ def print_clean_result(result: CleanResult) -> None:
         if outcome.detail:
             line += f" ({outcome.detail})"
         console.print(line, highlight=False)
-        if outcome.outcome in (Outcome.DELETED, Outcome.WOULD_DELETE):
-            for command in outcome.recovery:
-                console.print(f"  to recover: {command}", highlight=False)
+        for command in outcome.recovery:
+            console.print(f"  to recover: {command}", highlight=False)
     if not result.outcomes:
         console.print("Nothing to clean.")

@@ -2,12 +2,8 @@ import json
 
 import pytest
 
-from git_janitor.github import (
-    GhGitHubClient,
-    GitHubError,
-    PullRequest,
-    PullRequestState,
-)
+from git_janitor.github import GhGitHubClient, GitHubError
+from git_janitor.model import PullRequest, PullRequestState
 
 
 class FakeGh:

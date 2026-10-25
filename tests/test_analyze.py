@@ -1,10 +1,10 @@
-from git_janitor.analysis import (
+from git_janitor.analysis import analyze
+from git_janitor.model import (
     DeleteBranch,
     ExtraCommits,
     PullRequestEvidence,
     Status,
     Verdict,
-    analyze,
 )
 
 
@@ -18,7 +18,7 @@ def test_squash_merged_branch_is_deletable(sandbox):
     candidate = report.candidate("feat")
     assert candidate.status is Status.MERGED
     assert candidate.verdict is Verdict.DELETE
-    assert candidate.actions == [DeleteBranch(name="feat", tip=sandbox.tip("feat"))]
+    assert candidate.actions == (DeleteBranch(name="feat", tip=sandbox.tip("feat")),)
 
 
 def test_branch_behind_its_merged_pull_request_is_deletable(sandbox):
@@ -102,9 +102,9 @@ def test_reused_branch_name_does_not_inherit_old_merged_pull_request(sandbox):
     candidate = report.candidate("feat")
     assert candidate.status is Status.NO_PR
     assert candidate.verdict is Verdict.REVIEW
-    assert candidate.evidence == [
-        PullRequestEvidence(pull_request=sandbox.github.get(old_pr), matched=False)
-    ]
+    assert candidate.evidence == (
+        PullRequestEvidence(pull_request=sandbox.github.get(old_pr), matched=False),
+    )
 
 
 def test_branch_without_commits_of_its_own_needs_review(sandbox):
@@ -123,7 +123,7 @@ def test_default_branch_is_kept_and_never_deleted(sandbox):
     candidate = report.candidate("main")
     assert candidate.status is Status.DEFAULT_BRANCH
     assert candidate.verdict is Verdict.KEEP
-    assert candidate.actions == []
+    assert candidate.actions == ()
 
 
 def test_pull_request_is_found_by_upstream_name(sandbox):

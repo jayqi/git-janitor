@@ -33,9 +33,12 @@ The analysis runs in this order:
 
 `clean` re-runs the full analysis and executes the actions of the requested candidates whose verdict is `delete`.
 
-Git is accessed with `subprocess` and typed parsers for machine-readable output (`--porcelain`, `-z`, `--format`). Don't add GitPython.
+Modules:
 
-GitHub is accessed through the `GitHubClient` protocol. The real implementation shells out to `gh api graphql`.
+- `model`: the domain model, as frozen dataclasses. Facts gathered from git and GitHub (branches, worktrees, pull requests) and the conclusions drawn from them (statuses, blockers, evidence, actions, candidates). Variants are separate types joined in unions (`Blocker`, `Evidence`, `Action`), and derived values like `Candidate.verdict` are computed properties, not stored fields.
+- `git`, `github`, `precious`: adapters that gather facts and return `model` types. Git is accessed with `subprocess` and parsers for machine-readable output (`--porcelain`, `-z`, `--format`); don't add GitPython. GitHub is accessed through the `GitHubClient` protocol, whose real implementation shells out to `gh api graphql`.
+- `analysis`, `clean`: the logic that turns facts into a `Report` and carries out deletions.
+- `serialize`, `cli`: presentation. `serialize` is the only place the JSON shape is defined, and the README documents it. The domain model can change without changing the JSON; a change to the JSON is a change to the public interface.
 
 ## Safety invariants
 
@@ -51,5 +54,6 @@ These are the reasons the tool exists. Don't weaken them without an explicit dec
 ## Testing
 
 - Git behavior is tested against real temporary repositories, with a bare repository standing in as `origin`. Don't mock git.
+- The CLI tests compare JSON output against exact expected values, covering every variant of candidate, blocker, evidence, and clean outcome. Keep it that way when adding variants.
 - GitHub is replaced with an in-memory fake implementing `GitHubClient`. To simulate a squash merge, a test creates the squash commit on the fake origin's default branch, creates `refs/pull/<N>/head` on the bare origin, and registers a merged pull request in the fake.
 - There are no tests against live GitHub.

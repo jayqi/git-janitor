@@ -1,7 +1,8 @@
 import pytest
 
-from git_janitor.analysis import Verdict, analyze
+from git_janitor.analysis import analyze
 from git_janitor.clean import Outcome, clean
+from git_janitor.model import Verdict
 
 
 def merged_branch_in_worktree(sandbox, name="feat"):
@@ -24,7 +25,7 @@ def test_clean_removes_worktree_and_branch(sandbox):
     [outcome] = result.outcomes
     assert outcome.id == "feat"
     assert outcome.outcome is Outcome.DELETED
-    assert outcome.recovery == [f"git branch feat {tip}"]
+    assert outcome.recovery == (f"git branch feat {tip}",)
     assert not path.exists()
     assert "feat" not in local_branches(sandbox)
 
@@ -108,3 +109,13 @@ def test_clean_dry_run_deletes_nothing(sandbox):
 def test_clean_requires_targets_or_all(sandbox):
     with pytest.raises(ValueError):
         clean(sandbox.repo, sandbox.github)
+
+
+def test_clean_failure_reports_recovery_only_for_completed_actions(sandbox, unremovable_worktree):
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert "worktree remove" in outcome.detail
+    assert outcome.recovery == ()
+    assert "feat" in local_branches(sandbox)

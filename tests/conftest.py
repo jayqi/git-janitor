@@ -7,7 +7,8 @@ import subprocess
 
 import pytest
 
-from git_janitor.github import GitHubData, PullRequest, PullRequestState
+from git_janitor.github import GitHubData
+from git_janitor.model import PullRequest, PullRequestState
 
 
 @dataclass
@@ -206,3 +207,17 @@ def global_excludes(isolated_git_config: Path) -> Path:
 @pytest.fixture
 def sandbox(tmp_path: Path) -> Sandbox:
     return Sandbox(tmp_path.resolve())
+
+
+@pytest.fixture
+def unremovable_worktree(sandbox):
+    """A merged branch in a worktree that `git worktree remove` can't delete."""
+    path = sandbox.add_worktree("feat", create=True)
+    (path / "readonly").mkdir()
+    (path / "readonly" / "file.txt").write_text("content\n")
+    sandbox.git("add", "readonly", cwd=path)
+    sandbox.git("commit", "-m", "Add read-only directory", cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    (path / "readonly").chmod(0o555)
+    yield path
+    (path / "readonly").chmod(0o755)

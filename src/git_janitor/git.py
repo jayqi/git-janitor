@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+
+from git_janitor.model import Branch, Commit, Stash, Worktree
 
 
 class GitError(RuntimeError):
@@ -21,14 +24,6 @@ def run_git(*args: str, cwd: Path, input: str | None = None) -> str:
 def succeeds(*args: str, cwd: Path) -> bool:
     result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False)
     return result.returncode == 0
-
-
-@dataclass(frozen=True)
-class Branch:
-    name: str
-    tip: str
-    upstream: str | None
-    upstream_gone: bool
 
 
 def list_branches(cwd: Path) -> list[Branch]:
@@ -56,12 +51,6 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
     return succeeds("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
 
 
-@dataclass(frozen=True)
-class Commit:
-    sha: str
-    subject: str
-
-
 def commits_between(base: str, tip: str, cwd: Path) -> list[Commit]:
     """Commits reachable from `tip` but not `base`, oldest first."""
     output = run_git("log", "--reverse", "--format=%H%x00%s", f"{base}..{tip}", cwd=cwd)
@@ -83,16 +72,6 @@ def remote_url(remote: str, cwd: Path) -> str:
 
 def fetch(remote: str, cwd: Path) -> None:
     run_git("fetch", "--prune", remote, cwd=cwd)
-
-
-@dataclass(frozen=True)
-class Worktree:
-    path: Path
-    head: str
-    branch: str | None
-    is_main: bool
-    locked: bool
-    prunable: bool
 
 
 def list_worktrees(cwd: Path) -> list[Worktree]:
@@ -119,11 +98,11 @@ def list_worktrees(cwd: Path) -> list[Worktree]:
     return worktrees
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WorktreeStatus:
-    changed: list[str]
-    untracked: list[str]
-    ignored: list[str]
+    changed: tuple[str, ...]
+    untracked: tuple[str, ...]
+    ignored: tuple[str, ...]
     """Ignored paths. A wholly ignored directory is one entry ending in `/`."""
 
 
@@ -131,25 +110,27 @@ def worktree_status(cwd: Path) -> WorktreeStatus:
     output = run_git(
         "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", cwd=cwd
     )
-    status = WorktreeStatus(changed=[], untracked=[], ignored=[])
+    changed, untracked, ignored = [], [], []
     tokens = iter(output.split("\0"))
     for token in tokens:
         match token[:1]:
             case "1":
-                status.changed.append(token.split(" ", 8)[8])
+                changed.append(token.split(" ", 8)[8])
             case "2":
-                status.changed.append(token.split(" ", 9)[9])
+                changed.append(token.split(" ", 9)[9])
                 next(tokens)  # Original path of a rename or copy
             case "u":
-                status.changed.append(token.split(" ", 10)[10])
+                changed.append(token.split(" ", 10)[10])
             case "?":
-                status.untracked.append(token[2:])
+                untracked.append(token[2:])
             case "!":
-                status.ignored.append(token[2:])
-    return status
+                ignored.append(token[2:])
+    return WorktreeStatus(
+        changed=tuple(changed), untracked=tuple(untracked), ignored=tuple(ignored)
+    )
 
 
-def ignore_sources(paths: list[str], cwd: Path) -> dict[str, str]:
+def ignore_sources(paths: Sequence[str], cwd: Path) -> dict[str, str]:
     """Map each ignored path to the ignore file whose rule matched it."""
     output = run_git("check-ignore", "-v", "-z", "--stdin", cwd=cwd, input="\0".join(paths))
     fields = output.split("\0")
@@ -185,20 +166,19 @@ def operations_in_progress(cwd: Path) -> list[str]:
     return operations
 
 
-@dataclass(frozen=True)
-class Stash:
-    ref: str
-    subject: str
-
-    @property
-    def branch(self) -> str | None:
-        """The branch from a "WIP on <branch>: ..." or "On <branch>: ..." stash subject."""
-        for prefix in ("WIP on ", "On "):
-            if self.subject.startswith(prefix):
-                return self.subject.removeprefix(prefix).split(": ", 1)[0]
-        return None
-
-
 def list_stashes(cwd: Path) -> list[Stash]:
     output = run_git("stash", "list", "--format=%gd%x00%gs", cwd=cwd)
-    return [Stash(*line.split("\0", 1)) for line in output.splitlines()]
+    stashes = []
+    for line in output.splitlines():
+        ref, subject = line.split("\0", 1)
+        stashes.append(Stash(ref=ref, subject=subject, branch=_stash_branch(subject)))
+    return stashes
+
+
+def _stash_branch(subject: str) -> str | None:
+    """The branch from a "WIP on <branch>: ..." or "On <branch>: ..." stash subject."""
+    for prefix in ("WIP on ", "On "):
+        if subject.startswith(prefix):
+            branch = subject.removeprefix(prefix).split(": ", 1)[0]
+            return None if branch == "(no branch)" else branch
+    return None

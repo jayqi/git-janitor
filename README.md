@@ -159,7 +159,7 @@ git config --global --add janitor.disposable '.envrc'
 
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
-- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (`dirty`, `untracked`), `files` (`precious_files`, each with `path`, `size`, and `modified`), or `stashes` (`stashes`, each with `ref` and `subject`).
+- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (`dirty`, `untracked`), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `stashes` (`stashes`, each with `ref` and `subject`).
 - `evidence` holds the pull requests found for the branch name, newest first, whether or not they matched. For `merged_plus_local`, it also holds an `extra_commits` entry with the merged `pull_request` number and the `sha` and `subject` of each commit beyond its head, oldest first.
 - `actions` lists, in order, what `clean` would do.
 
@@ -182,7 +182,7 @@ git config --global --add janitor.disposable '.envrc'
 }
 ```
 
-`outcome` is one of `deleted`, `would_delete` (with `--dry-run`), `refused` (verdict isn't `delete`), `not_found`, or `failed` (git refused an action; `detail` has its error).
+`outcome` is one of `deleted`, `would_delete` (with `--dry-run`), `refused` (verdict isn't `delete`), `not_found`, or `failed` (git refused an action; `detail` has its error). `actions` are the candidate's planned actions. `recovery` covers only the actions that were carried out, or would be with `--dry-run`.
 
 `schema_version` increases whenever the shape of either output changes incompatibly.
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 import os
 from pathlib import Path
 
 from git_janitor import git
+from git_janitor.model import PreciousFile
 
 BUILTIN_DISPOSABLE = (
     ".DS_Store",
@@ -23,15 +24,7 @@ BUILTIN_DISPOSABLE = (
 DISPOSABLE_CONFIG_KEY = "janitor.disposable"
 
 
-@dataclass(frozen=True)
-class PreciousFile:
-    path: str
-    """Path relative to the worktree root."""
-    size: int
-    modified: datetime
-
-
-def find_precious_files(worktree: Path, ignored: list[str]) -> list[PreciousFile]:
+def find_precious_files(worktree: Path, ignored: Sequence[str]) -> list[PreciousFile]:
     """Precious files among a worktree's ignored paths, as listed by `git.worktree_status`."""
     if not ignored:
         return []
