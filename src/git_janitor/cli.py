@@ -90,8 +90,8 @@ def clean_command(
     no_fetch: NoFetchOption = False,
 ) -> None:
     """Delete candidates whose verdict is delete. Anything else is refused."""
-    if not targets and not all:
-        raise fail("Pass candidate ids to clean, or --all.")
+    if bool(targets) == all:
+        raise fail("Pass candidate ids to clean, or --all, but not both.")
     repo = repo_root()
     try:
         result = clean(

@@ -44,11 +44,12 @@ Modules:
 
 These are the reasons the tool exists. Don't weaken them without an explicit decision from the maintainer.
 
-- A pull request only counts if the local tip equals its head commit or is an ancestor of it. Matching by branch name alone is never enough.
+- A pull request only counts if the local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch. Matching by branch name alone is never enough.
 - Only merges into the default branch count.
 - Only `merged` candidates with no blockers get the `delete` verdict.
 - `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
+- Each deletion re-checks its target immediately beforehand: a worktree's HEAD and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
 - Nothing on the remote is ever modified.
 
 ## Testing

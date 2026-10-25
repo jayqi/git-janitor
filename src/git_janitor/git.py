@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+from subprocess import CompletedProcess
 
 from git_janitor.model import Branch, Commit, Stash, Worktree
 
@@ -10,39 +11,55 @@ class GitError(RuntimeError):
     pass
 
 
+def _git(args: Sequence[str], cwd: Path, input: str | None = None) -> CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=cwd, input=input, capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError as exc:
+        if not cwd.is_dir():
+            raise GitError(f"Directory does not exist: {cwd}") from exc
+        raise GitError("git is not installed.") from exc
+
+
 def run_git(*args: str, cwd: Path, input: str | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, input=input, capture_output=True, text=True, check=False
-    )
+    result = _git(args, cwd, input)
     if result.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
 
 
 def succeeds(*args: str, cwd: Path) -> bool:
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False)
-    return result.returncode == 0
+    return _git(args, cwd).returncode == 0
 
 
 def list_branches(cwd: Path) -> list[Branch]:
     output = run_git(
         "for-each-ref",
-        "--format=%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)",
+        "--format=%(refname:lstrip=2)%00%(objectname)%00%(upstream:remotename)"
+        "%00%(upstream:remoteref)%00%(upstream:track)",
         "refs/heads",
         cwd=cwd,
     )
     branches = []
-    for line in output.splitlines():
-        name, tip, upstream, track = line.split("\0")
+    for line in _lines(output):
+        name, tip, remote, remote_ref, track = line.split("\0")
+        has_remote = remote not in ("", ".")
         branches.append(
             Branch(
                 name=name,
                 tip=tip,
-                upstream=upstream or None,
+                upstream_remote=remote if has_remote else None,
+                upstream_branch=remote_ref.removeprefix("refs/heads/") if has_remote else None,
                 upstream_gone=track == "[gone]",
             )
         )
     return branches
+
+
+def _lines(output: str) -> list[str]:
+    """Split git output on newlines only, unlike `str.splitlines`."""
+    return [line for line in output.split("\n") if line]
 
 
 def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
@@ -52,7 +69,7 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
 def commits_between(base: str, tip: str, cwd: Path) -> list[Commit]:
     """Commits reachable from `tip` but not `base`, oldest first."""
     output = run_git("log", "--reverse", "--format=%H%x00%s", f"{base}..{tip}", cwd=cwd)
-    return [Commit(*line.split("\0", 1)) for line in output.splitlines()]
+    return [Commit(*line.split("\0", 1)) for line in _lines(output)]
 
 
 def has_commit(sha: str, cwd: Path) -> bool:
@@ -82,18 +99,50 @@ def list_worktrees(cwd: Path) -> list[Worktree]:
         for line in record.split("\0"):
             key, _, value = line.partition(" ")
             fields[key] = value
+        path = Path(fields["worktree"])
         branch = fields.get("branch")
+        if branch:
+            branch = branch.removeprefix("refs/heads/")
+        elif "detached" in fields and "prunable" not in fields and path.is_dir():
+            branch = _in_progress_branch(path)
         worktrees.append(
             Worktree(
-                path=Path(fields["worktree"]),
+                path=path,
                 head=fields.get("HEAD", ""),
-                branch=branch.removeprefix("refs/heads/") if branch else None,
+                branch=branch,
                 is_main=not worktrees,
                 locked="locked" in fields,
                 prunable="prunable" in fields,
             )
         )
     return worktrees
+
+
+def _in_progress_branch(worktree: Path) -> str | None:
+    """The branch being rebased or bisected in a worktree, which git lists as detached."""
+    rebase_merge, rebase_apply, bisect_start = _lines(
+        run_git(
+            "rev-parse",
+            "--git-path",
+            "rebase-merge/head-name",
+            "--git-path",
+            "rebase-apply/head-name",
+            "--git-path",
+            "BISECT_START",
+            cwd=worktree,
+        )
+    )
+    for head_name in (worktree / rebase_merge, worktree / rebase_apply):
+        if head_name.is_file():
+            ref = head_name.read_text().strip()
+            if ref.startswith("refs/heads/"):
+                return ref.removeprefix("refs/heads/")
+    start = worktree / bisect_start
+    if start.is_file():
+        name = start.read_text().strip()
+        if succeeds("show-ref", "--verify", "--quiet", f"refs/heads/{name}", cwd=worktree):
+            return name
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +155,13 @@ class WorktreeStatus:
 
 def worktree_status(cwd: Path) -> WorktreeStatus:
     output = run_git(
-        "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching", cwd=cwd
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        cwd=cwd,
     )
     changed, untracked, ignored = [], [], []
     tokens = iter(output.split("\0"))
@@ -135,11 +190,16 @@ def ignore_sources(paths: Sequence[str], cwd: Path) -> dict[str, str]:
     return {fields[i + 3]: fields[i] for i in range(0, len(fields) - 3, 4)}
 
 
+def tracked_files(paths: Sequence[str], cwd: Path) -> set[str]:
+    """The subset of `paths` that git tracks."""
+    if not paths:
+        return set()
+    output = run_git("ls-files", "-z", "--", *paths, cwd=cwd)
+    return {path for path in output.split("\0") if path}
+
+
 def config_get_all(key: str, cwd: Path) -> list[str]:
-    result = subprocess.run(
-        ["git", "config", "--get-all", key], cwd=cwd, capture_output=True, text=True, check=False
-    )
-    return result.stdout.splitlines()
+    return _lines(_git(["config", "--get-all", key], cwd).stdout)
 
 
 IN_PROGRESS_MARKERS = {
@@ -155,7 +215,7 @@ IN_PROGRESS_MARKERS = {
 def operations_in_progress(cwd: Path) -> list[str]:
     """Names of operations (merge, rebase, ...) in progress in the worktree at `cwd`."""
     args = [arg for marker in IN_PROGRESS_MARKERS for arg in ("--git-path", marker)]
-    paths = run_git("rev-parse", *args, cwd=cwd).splitlines()
+    paths = _lines(run_git("rev-parse", *args, cwd=cwd))
     operations = []
     for marker, path in zip(IN_PROGRESS_MARKERS, paths, strict=True):
         operation = IN_PROGRESS_MARKERS[marker]
@@ -167,7 +227,7 @@ def operations_in_progress(cwd: Path) -> list[str]:
 def list_stashes(cwd: Path) -> list[Stash]:
     output = run_git("stash", "list", "--format=%gd%x00%gs", cwd=cwd)
     stashes = []
-    for line in output.splitlines():
+    for line in _lines(output):
         ref, subject = line.split("\0", 1)
         stashes.append(Stash(ref=ref, subject=subject, branch=_stash_branch(subject)))
     return stashes

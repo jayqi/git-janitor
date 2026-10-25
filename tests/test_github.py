@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from git_janitor.github import GhGitHubClient, GitHubError
+from git_janitor.github import GhGitHubClient, GitHubError, run_gh
 from git_janitor.model import PullRequest, PullRequestState
 
 
@@ -19,7 +19,7 @@ class FakeGh:
         fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
         repository = {
             "nameWithOwner": f"{fields['owner']}/{fields['name']}",
-            "defaultBranchRef": {"name": self.default_branch},
+            "defaultBranchRef": self.default_branch and {"name": self.default_branch},
         }
         for key, head in fields.items():
             if key.startswith("head"):
@@ -135,3 +135,25 @@ def test_gh_failure_raises_github_error():
 
     with pytest.raises(GitHubError, match="authentication"):
         GhGitHubClient(run_gh=failing_gh).fetch("git@github.com:owner/repo.git", ["feat"])
+
+
+def test_repository_without_default_branch_raises_github_error():
+    gh = FakeGh(default_branch=None)
+
+    with pytest.raises(GitHubError, match="default branch"):
+        GhGitHubClient(run_gh=gh).fetch("git@github.com:owner/repo.git", ["feat"])
+
+
+def test_graphql_errors_raise_github_error():
+    def gh(args):
+        return json.dumps({"data": {"repository": None}, "errors": [{"message": "Not found"}]})
+
+    with pytest.raises(GitHubError, match="Not found"):
+        GhGitHubClient(run_gh=gh).fetch("git@github.com:owner/repo.git", ["feat"])
+
+
+def test_missing_gh_raises_github_error(monkeypatch):
+    monkeypatch.setenv("PATH", "")
+
+    with pytest.raises(GitHubError, match="not installed"):
+        run_gh(["api", "graphql"])

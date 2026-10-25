@@ -6,6 +6,7 @@ from git_janitor.model import (
     Action,
     Blocker,
     Branch,
+    BrokenWorktreeBlocker,
     Candidate,
     DeleteBranch,
     DirtyBlocker,
@@ -15,6 +16,8 @@ from git_janitor.model import (
     IsCurrentBlocker,
     IsMainBlocker,
     LockedBlocker,
+    MultipleWorktreesBlocker,
+    NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequest,
     PullRequestEvidence,
@@ -44,7 +47,10 @@ def analyze(
         git.fetch(REMOTE, cwd=repo)
     branches = git.list_branches(repo)
     worktrees = git.list_worktrees(repo)
-    worktrees_by_branch = {wt.branch: wt for wt in worktrees if wt.branch}
+    worktrees_by_branch: dict[str, list[Worktree]] = {}
+    for worktree in worktrees:
+        if worktree.branch:
+            worktrees_by_branch.setdefault(worktree.branch, []).append(worktree)
     stashes = git.list_stashes(repo)
     head_names = sorted({name for branch in branches for name in _head_names(branch)})
     data = github.fetch(git.remote_url(REMOTE, cwd=repo), head_names)
@@ -62,14 +68,19 @@ def analyze(
                 for pr in data.pull_requests.get(name, [])
             ]
             status, evidence = _classify_branch(branch, prs, default_ref, default_branch, repo)
-        worktree = worktrees_by_branch.get(branch.name)
+        branch_worktrees = worktrees_by_branch.get(branch.name, [])
+        worktree = branch_worktrees[0] if branch_worktrees else None
+        blockers = _branch_blockers(branch, status, worktree, worktrees, stashes, cwd)
+        if len(branch_worktrees) > 1:
+            paths = tuple(str(wt.path) for wt in branch_worktrees)
+            blockers = (*blockers, MultipleWorktreesBlocker(paths=paths))
         candidates.append(
             Candidate(
                 id=branch.name,
                 status=status,
                 branch=branch,
                 worktree=worktree,
-                blockers=_branch_blockers(branch, status, worktree, stashes, cwd),
+                blockers=blockers,
                 evidence=evidence,
                 actions=_branch_actions(branch, status, worktree),
             )
@@ -84,7 +95,7 @@ def analyze(
                 status=_classify_unmatched(worktree.head, default_ref, repo),
                 branch=None,
                 worktree=worktree,
-                blockers=_worktree_blockers(worktree, cwd),
+                blockers=worktree_blockers(worktree, worktrees, cwd),
                 actions=(RemoveWorktree(path=worktree.path),),
             )
         )
@@ -113,6 +124,7 @@ def _branch_blockers(
     branch: Branch,
     status: Status,
     worktree: Worktree | None,
+    worktrees: list[Worktree],
     stashes: list[Stash],
     cwd: Path,
 ) -> tuple[Blocker, ...]:
@@ -121,16 +133,21 @@ def _branch_blockers(
         if status is not Status.DEFAULT_BRANCH:
             blockers.append(IsMainBlocker())
     elif worktree:
-        blockers.extend(_worktree_blockers(worktree, cwd))
+        blockers.extend(worktree_blockers(worktree, worktrees, cwd))
     branch_stashes = tuple(stash for stash in stashes if stash.branch == branch.name)
     if branch_stashes:
         blockers.append(StashesBlocker(stashes=branch_stashes))
     return tuple(blockers)
 
 
-def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
+def worktree_blockers(
+    worktree: Worktree, worktrees: list[Worktree], cwd: Path
+) -> tuple[Blocker, ...]:
+    """Blockers for removing a linked worktree. `worktrees` is every worktree of the repo."""
+    if not worktree.path.exists():
+        return (LockedBlocker(),) if worktree.locked else ()
     if worktree.prunable:
-        return ()
+        return (BrokenWorktreeBlocker(),)
     blockers: list[Blocker] = []
     if cwd.is_relative_to(worktree.path.resolve()):
         blockers.append(IsCurrentBlocker())
@@ -143,7 +160,15 @@ def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
         blockers.append(DirtyBlocker(paths=status.changed))
     if status.untracked:
         blockers.append(UntrackedBlocker(paths=status.untracked))
-    precious = find_precious_files(worktree.path, status.ignored)
+    nested = [
+        other.path
+        for other in worktrees
+        if other.path != worktree.path and other.path.is_relative_to(worktree.path)
+    ]
+    if nested:
+        paths = tuple(path.relative_to(worktree.path).as_posix() for path in nested)
+        blockers.append(NestedWorktreeBlocker(paths=paths))
+    precious = find_precious_files(worktree.path, status.ignored, skip=nested)
     if precious:
         blockers.append(PreciousFilesBlocker(files=tuple(precious)))
     return tuple(blockers)
@@ -152,8 +177,8 @@ def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
 def _head_names(branch: Branch) -> set[str]:
     """Names a pull request's head branch could have: the local name and the upstream's name."""
     names = {branch.name}
-    if branch.upstream and branch.upstream.startswith(f"{REMOTE}/"):
-        names.add(branch.upstream.removeprefix(f"{REMOTE}/"))
+    if branch.upstream_remote == REMOTE and branch.upstream_branch:
+        names.add(branch.upstream_branch)
     return names
 
 
@@ -164,7 +189,7 @@ def _classify_branch(
     default_branch: str,
     repo: Path,
 ) -> tuple[Status, tuple[Evidence, ...]]:
-    matched = {pr.number for pr in prs if _contains(pr, branch.tip, repo)}
+    matched = {pr.number for pr in prs if _contains(pr, branch.tip, default_ref, repo)}
     pr_evidence = tuple(
         PullRequestEvidence(pull_request=pr, matched=pr.number in matched)
         for pr in sorted(prs, key=lambda pr: pr.number, reverse=True)
@@ -207,10 +232,19 @@ def _classify_unmatched(tip: str, default_ref: str, repo: Path) -> Status:
     return Status.NO_PR
 
 
-def _contains(pr: PullRequest, tip: str, repo: Path) -> bool:
-    """Whether `tip` is the pull request's head commit or one of its ancestors."""
+def _contains(pr: PullRequest, tip: str, default_ref: str, repo: Path) -> bool:
+    """Whether `tip` is the pull request's head commit or one of the pull request's own commits.
+
+    A tip already in the default branch only matches the head exactly. Otherwise, a branch
+    created from history that predates the pull request would match it.
+    """
     if pr.head_oid == tip:
         return True
+    if git.is_ancestor(tip, default_ref, cwd=repo):
+        return False
     if not git.has_commit(pr.head_oid, cwd=repo):
-        git.fetch_objects(REMOTE, f"refs/pull/{pr.number}/head", cwd=repo)
+        try:
+            git.fetch_objects(REMOTE, f"refs/pull/{pr.number}/head", cwd=repo)
+        except git.GitError:
+            return False
     return git.is_ancestor(tip, pr.head_oid, cwd=repo)

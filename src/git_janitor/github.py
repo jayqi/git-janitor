@@ -56,21 +56,28 @@ class GhGitHubClient:
         pull_requests: dict[str, list[PullRequest]] = {}
         for batch in batches:
             repository = self._query(host, owner, name, batch)
-            for i, head in enumerate(batch):
-                pull_requests[head] = [
-                    PullRequest(
-                        number=node["number"],
-                        url=node["url"],
-                        state=PullRequestState(node["state"]),
-                        base=node["baseRefName"],
-                        head_name=node["headRefName"],
-                        head_oid=node["headRefOid"],
-                    )
-                    for node in repository[f"pr{i}"]["nodes"]
-                ]
+            try:
+                for i, head in enumerate(batch):
+                    pull_requests[head] = [
+                        PullRequest(
+                            number=node["number"],
+                            url=node["url"],
+                            state=PullRequestState(node["state"]),
+                            base=node["baseRefName"],
+                            head_name=node["headRefName"],
+                            head_oid=node["headRefOid"],
+                        )
+                        for node in repository[f"pr{i}"]["nodes"]
+                    ]
+                name_with_owner = repository["nameWithOwner"]
+                default_branch_ref = repository["defaultBranchRef"]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GitHubError(f"Unexpected response from GitHub: {exc!r}") from exc
+        if not default_branch_ref:
+            raise GitHubError(f"{name_with_owner} has no default branch.")
         return GitHubData(
-            name_with_owner=repository["nameWithOwner"],
-            default_branch=repository["defaultBranchRef"]["name"],
+            name_with_owner=name_with_owner,
+            default_branch=default_branch_ref["name"],
             pull_requests=pull_requests,
         )
 
@@ -91,10 +98,16 @@ class GhGitHubClient:
         args += ["-f", f"owner={owner}", "-f", f"name={name}"]
         for i, head in enumerate(heads):
             args += ["-f", f"head{i}={head}"]
-        response = json.loads(self.run_gh(args))
+        try:
+            response = json.loads(self.run_gh(args))
+        except json.JSONDecodeError as exc:
+            raise GitHubError(f"Unexpected response from GitHub: {exc}") from exc
         if response.get("errors"):
             raise GitHubError(f"GitHub API error: {response['errors']}")
-        return response["data"]["repository"]
+        repository = response.get("data", {}).get("repository")
+        if repository is None:
+            raise GitHubError(f"Repository {owner}/{name} not found on {host}.")
+        return repository
 
 
 SCP_LIKE_URL = re.compile(r"^(?:[^@/]+@)?(?P<host>[^:/]+):(?P<path>[^/].*)$")

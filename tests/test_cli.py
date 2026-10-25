@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 import json
 import os
+import shutil
 
 import pytest
 from typer.testing import CliRunner
@@ -318,3 +319,132 @@ def test_no_subcommand_prints_help():
 
     assert "report" in result.output
     assert "clean" in result.output
+
+
+def test_missing_git_fails_cleanly(in_sandbox, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+
+    result = runner.invoke(cli.app, ["report"])
+
+    assert result.exit_code == 1
+    assert "git is not installed" in result.stderr
+
+
+def test_clean_with_targets_and_all_is_an_error(in_sandbox):
+    result = runner.invoke(cli.app, ["clean", "--all", "feat"])
+
+    assert result.exit_code != 0
+    assert "--all" in result.stderr
+
+
+def test_report_json_branch_without_worktree_and_unmatched_pull_request(in_sandbox):
+    in_sandbox.new_branch("feat")
+    old_pr = in_sandbox.open_pr("feat")
+    in_sandbox.squash_merge(old_pr)
+    old_head = in_sandbox.tip("feat")
+    in_sandbox.git("branch", "-D", "feat")
+    in_sandbox.git("fetch", "-q", "origin")
+    tip = in_sandbox.new_branch("feat", start="origin/main")
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate == {
+        "id": "feat",
+        "verdict": "review",
+        "status": "no_pr",
+        "branch": {"name": "feat", "tip": tip, "upstream": "origin/main", "upstream_gone": False},
+        "worktree": None,
+        "blockers": [],
+        "evidence": [
+            {
+                "kind": "pull_request",
+                "number": old_pr,
+                "url": f"https://github.com/owner/repo/pull/{old_pr}",
+                "state": "MERGED",
+                "base": "main",
+                "head_oid": old_head,
+                "matched": False,
+            }
+        ],
+        "actions": [{"kind": "delete_branch", "name": "feat", "tip": tip}],
+    }
+
+
+def test_report_json_missing_worktree(in_sandbox):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    shutil.rmtree(path)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["verdict"] == "delete"
+    assert candidate["worktree"] == {
+        "path": str(path),
+        "head": in_sandbox.tip("feat"),
+        "detached": False,
+        "is_main": False,
+        "locked": False,
+        "prunable": True,
+    }
+    assert candidate["blockers"] == []
+
+
+def test_report_json_nested_and_multiple_worktree_blockers(in_sandbox):
+    path = in_sandbox.add_worktree("outer", create=True)
+    (path / ".gitignore").write_text(".worktrees/\n")
+    in_sandbox.git("add", ".gitignore", cwd=path)
+    in_sandbox.git("commit", "-m", "Ignore worktrees", cwd=path)
+    in_sandbox.squash_merge(in_sandbox.open_pr("outer"))
+    in_sandbox.git("worktree", "add", "-q", "-b", "inner", str(path / ".worktrees/inner"), "main")
+    second = in_sandbox.root / "wt-outer-again"
+    in_sandbox.git("worktree", "add", "-q", "-f", str(second), "outer")
+
+    [candidate] = report_json("outer")["candidates"]
+
+    assert candidate["blockers"] == [
+        {
+            "code": "nested_worktree",
+            "detail": "1 other worktrees inside this worktree",
+            "paths": [".worktrees/inner"],
+        },
+        {
+            "code": "multiple_worktrees",
+            "detail": "checked out in 2 worktrees",
+            "paths": [str(path), str(second)],
+        },
+    ]
+
+
+def test_report_json_broken_worktree_blocker(in_sandbox):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    (path / ".git").unlink()
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["blockers"] == [
+        {
+            "code": "broken_worktree",
+            "detail": "the directory exists, but git no longer recognizes it as a worktree",
+        }
+    ]
+
+
+def test_clean_json_deleted(in_sandbox):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    tip = in_sandbox.tip("feat")
+
+    exit_code, output = clean_json("feat")
+
+    assert exit_code == 0
+    assert output["outcomes"] == [
+        {
+            "id": "feat",
+            "outcome": "deleted",
+            "verdict": "delete",
+            "detail": "",
+            "actions": [
+                {"kind": "remove_worktree", "path": str(path)},
+                {"kind": "delete_branch", "name": "feat", "tip": tip},
+            ],
+            "recovery": [f"git branch feat {tip}"],
+        }
+    ]

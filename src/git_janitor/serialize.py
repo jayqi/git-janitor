@@ -13,6 +13,8 @@ from git_janitor.model import (
     Evidence,
     ExtraCommits,
     InProgressOpBlocker,
+    MultipleWorktreesBlocker,
+    NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequestEvidence,
     RemoveWorktree,
@@ -75,7 +77,12 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
 def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
     result: dict[str, Any] = {"code": str(blocker.code), "detail": blocker.detail}
     match blocker:
-        case DirtyBlocker(paths=paths) | UntrackedBlocker(paths=paths):
+        case (
+            DirtyBlocker(paths=paths)
+            | UntrackedBlocker(paths=paths)
+            | NestedWorktreeBlocker(paths=paths)
+            | MultipleWorktreesBlocker(paths=paths)
+        ):
             result["paths"] = list(paths)
         case PreciousFilesBlocker(files=files):
             result["files"] = [

@@ -34,15 +34,15 @@ git janitor clean --all             # delete every candidate whose verdict is `d
 git janitor clean --all --dry-run   # show what would be deleted
 ```
 
-Both commands run `git fetch origin --prune` first. Pass `--no-fetch` to skip it.
+Both commands run `git fetch origin --prune` first. Pass `--no-fetch` to skip it. Even with `--no-fetch`, git-janitor may fetch a pull request's head commit (`refs/pull/<N>/head`) when it's missing locally. If that fetch fails, the pull request is treated as not matching.
 
 To run against a repository other than the current directory, use `git -C <path> janitor ...`.
 
 ## How merge status is decided
 
-A branch counts as merged only if **its commits are in origin's default branch**. A merged pull request with the same branch name is not enough: the pull request must contain the branch's local tip.
+A branch counts as merged only if **GitHub reports a pull request containing its local tip as merged into origin's default branch**. A merged pull request with the same branch name is not enough: the pull request must contain the branch's local tip. With squash and rebase merges, the branch's own commits never appear in the default branch; what's checked is that the pull request containing them was merged.
 
-For each branch, git-janitor looks up pull requests on origin whose head branch has the same name as the local branch or its upstream on origin. A pull request **matches** if the local tip is the pull request's head commit or an ancestor of it. Pull requests that share the name but don't match are reported as evidence and otherwise ignored, so a reused branch name can't make new work look merged.
+For each branch, git-janitor looks up pull requests on origin whose head branch has the same name as the local branch or its upstream on origin. A pull request **matches** if the local tip is the pull request's head commit, or an ancestor of the head that isn't already in the default branch. The second condition stops a branch created from older history, such as a fresh branch reusing a merged pull request's name, from matching. Pull requests that share the name but don't match are reported as evidence and otherwise ignored, so a reused branch name can't make new work look merged.
 
 The default branch comes from GitHub.
 
@@ -59,7 +59,7 @@ The default branch comes from GitHub.
 | `no_pr` | No matching pull request, and the tip has commits that aren't in the default branch. |
 | `default_branch` | This is the default branch. It is never deleted. |
 
-A worktree with a detached HEAD is judged by its HEAD commit. It has no branch name, so it can only be `no_unique_commits` or `no_pr`.
+A worktree with a detached HEAD is judged by its HEAD commit. It has no branch name, so it can only be `no_unique_commits` or `no_pr`. A worktree in the middle of a rebase or bisect is detached too, but git-janitor reports it with the branch the rebase or bisect started from.
 
 ## Candidates and verdicts
 
@@ -86,21 +86,25 @@ Any blocker downgrades a `merged` candidate to `review`.
 | `dirty` | The worktree has modified or staged tracked files. |
 | `untracked` | The worktree has untracked files that aren't ignored. |
 | `precious_files` | The worktree has ignored files that look like personal work (see below). |
-| `locked` | The worktree is locked with `git worktree lock`. |
+| `locked` | The worktree is locked with `git worktree lock`. A locked worktree whose directory is missing gets only this blocker. |
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
 | `is_current` | The current directory is inside the worktree. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
 | `stashes` | There are stash entries made on this branch. |
+| `nested_worktree` | Other worktrees are inside this worktree's directory, so removing it would delete them too. |
+| `multiple_worktrees` | The branch is checked out in more than one worktree (with `git worktree add --force`). |
+| `broken_worktree` | The worktree's directory exists, but git no longer recognizes it as a worktree, for example because its `.git` file was deleted. |
 
 ### Precious ignored files
 
 `git worktree remove` deletes ignored files without warning, so git-janitor checks them first. An ignored file is classified by which ignore rule matched it:
 
-- Matched by a `.gitignore` file in the repository: **disposable**. These are things the project generates, like `.venv/` or `build/`.
+- Matched by a `.gitignore` file committed to the repository: **disposable**. These are things the project generates, like `.venv/` or `build/`. A `.gitignore` that isn't committed, such as `notes/.gitignore` containing `*`, doesn't count.
 - Matched by your global excludes file (`core.excludesFile`) or `.git/info/exclude`: **precious**. These are things you set aside personally, like `.plans/`.
 - Common operating-system and editor files are always disposable, even when matched by your global excludes: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `.idea/`, `.vscode/`, `*.swp`, `*.swo`, `*~`.
+- An ignored directory that contains another git repository is always precious. Other worktrees are reported as `nested_worktree` instead.
 
-To mark more patterns as disposable, add them to git config:
+To mark more patterns as disposable, add them to git config. Each pattern is matched against single file and directory names, so a pattern containing `/` never matches.
 
 ```sh
 git config --global --add janitor.disposable '.envrc'
@@ -159,7 +163,7 @@ git config --global --add janitor.disposable '.envrc'
 
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
-- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (`dirty`, `untracked`), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `stashes` (`stashes`, each with `ref` and `subject`).
+- `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (`dirty`, `untracked`, and `nested_worktree`, relative to the worktree; `multiple_worktrees`, absolute), `files` (`precious_files`, each with `path`, `size`, and `modified`), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `stashes` (`stashes`, each with `ref` and `subject`).
 - `evidence` holds the pull requests found for the branch name, newest first, whether or not they matched. For `merged_plus_local`, it also holds an `extra_commits` entry with the merged `pull_request` number and the `sha` and `subject` of each commit beyond its head, oldest first.
 - `actions` lists, in order, what `clean` would do.
 
@@ -188,10 +192,11 @@ git config --global --add janitor.disposable '.envrc'
 
 ## Cleaning up
 
-`git janitor clean` takes candidate ids, or `--all` for every candidate whose verdict is `delete`. Running it with neither is an error.
+`git janitor clean` takes candidate ids, or `--all` for every candidate whose verdict is `delete`. Running it with neither, or with both, is an error.
 
 - It always re-runs the analysis and refuses any target whose verdict isn't `delete`. There is no option to force it.
-- It removes the worktree with `git worktree remove` (without `--force`), then deletes the branch with `git branch -D`.
+- Right before removing a worktree, it checks again that the worktree's HEAD is unchanged and that it has no blockers. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
+- It removes the worktree with `git worktree remove` (without `--force`), then deletes the branch and its `branch.<name>` config.
 - It only touches local branches and worktrees. It never deletes anything on GitHub.
 - It prints the tip commit of each deleted branch and a command to recreate it, such as `git branch feat-x 4f1c0de`. This works until git garbage-collects the commit.
 

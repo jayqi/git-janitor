@@ -2,9 +2,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+import shlex
 
 from git_janitor import git
-from git_janitor.analysis import analyze
+from git_janitor.analysis import analyze, worktree_blockers
 from git_janitor.github import GitHubClient
 from git_janitor.model import Action, Candidate, DeleteBranch, RemoveWorktree, Report, Verdict
 
@@ -49,32 +50,44 @@ def clean(
     fetch: bool = True,
     cwd: Path | None = None,
 ) -> CleanResult:
-    """Re-analyze `repo` and carry out the actions of targets with a delete verdict."""
-    if not targets and not all:
-        raise ValueError("Pass targets or all=True.")
+    """Re-analyze `repo` and carry out the actions of targets with a delete verdict.
+
+    Each action first checks that its target hasn't changed since the analysis.
+    """
+    if bool(targets) == all:
+        raise ValueError("Pass either targets or all=True.")
     cwd = (cwd or Path.cwd()).resolve()
     report = analyze(repo, github, fetch=fetch, cwd=cwd)
 
     if all:
-        outcomes = [
-            _clean_candidate(candidate, repo, dry_run=dry_run)
-            for candidate in report.candidates
-            if candidate.verdict is Verdict.DELETE
+        selected: list[Candidate | str] = [
+            c for c in report.candidates if c.verdict is Verdict.DELETE
         ]
     else:
-        outcomes = []
+        selected = []
         for target in targets:
             candidate = report.find(target, cwd=cwd)
             if candidate is None:
-                outcomes.append(
-                    TargetOutcome(id=target, outcome=Outcome.NOT_FOUND, detail="no such candidate")
-                )
-            else:
-                outcomes.append(_clean_candidate(candidate, repo, dry_run=dry_run))
+                selected.append(target)
+            elif candidate not in selected:
+                selected.append(candidate)
+
+    outcomes = [
+        TargetOutcome(id=item, outcome=Outcome.NOT_FOUND, detail="no such candidate")
+        if isinstance(item, str)
+        else _clean_candidate(item, repo, cwd, dry_run=dry_run)
+        for item in selected
+    ]
     return CleanResult(report=report, outcomes=tuple(outcomes))
 
 
-def _clean_candidate(candidate: Candidate, repo: Path, *, dry_run: bool) -> TargetOutcome:
+class ChangedSinceAnalysisError(Exception):
+    pass
+
+
+def _clean_candidate(
+    candidate: Candidate, repo: Path, cwd: Path, *, dry_run: bool
+) -> TargetOutcome:
     def outcome(outcome: Outcome, detail: str = "", done: Sequence[Action] = ()) -> TargetOutcome:
         return TargetOutcome(
             id=candidate.id,
@@ -82,7 +95,7 @@ def _clean_candidate(candidate: Candidate, repo: Path, *, dry_run: bool) -> Targ
             verdict=candidate.verdict,
             detail=detail,
             actions=candidate.actions,
-            recovery=_recovery(candidate, done),
+            recovery=_recovery(done),
         )
 
     if candidate.verdict is not Verdict.DELETE:
@@ -93,27 +106,38 @@ def _clean_candidate(candidate: Candidate, repo: Path, *, dry_run: bool) -> Targ
     done: list[Action] = []
     for action in candidate.actions:
         try:
-            _execute(action, repo)
-        except git.GitError as exc:
+            _execute(action, candidate, repo, cwd)
+        except (git.GitError, ChangedSinceAnalysisError) as exc:
             return outcome(Outcome.FAILED, str(exc), done)
         done.append(action)
     return outcome(Outcome.DELETED, done=done)
 
 
-def _execute(action: Action, repo: Path) -> None:
+def _execute(action: Action, candidate: Candidate, repo: Path, cwd: Path) -> None:
+    worktrees = git.list_worktrees(repo)
     match action:
         case RemoveWorktree(path=path):
+            current = next((wt for wt in worktrees if wt.path == path), None)
+            if current is None or candidate.worktree is None:
+                raise ChangedSinceAnalysisError(f"{path} is no longer a worktree")
+            if current.head != candidate.worktree.head:
+                raise ChangedSinceAnalysisError(f"HEAD of {path} changed since the analysis")
+            blockers = worktree_blockers(current, worktrees, cwd)
+            if blockers:
+                codes = ", ".join(str(b.code) for b in blockers)
+                raise ChangedSinceAnalysisError(f"{path} has new blockers: {codes}")
             git.run_git("worktree", "remove", str(path), cwd=repo)
-        case DeleteBranch(name=name):
-            git.run_git("branch", "-D", name, cwd=repo)
+        case DeleteBranch(name=name, tip=tip):
+            if any(wt.branch == name for wt in worktrees):
+                raise ChangedSinceAnalysisError(f"{name} is now checked out in a worktree")
+            git.run_git("update-ref", "-d", f"refs/heads/{name}", tip, cwd=repo)
+            git.succeeds("config", "--remove-section", f"branch.{name}", cwd=repo)
 
 
-def _recovery(candidate: Candidate, done: Sequence[Action]) -> tuple[str, ...]:
-    commands = []
-    for action in done:
-        match action:
-            case DeleteBranch(name=name, tip=tip):
-                commands.append(f"git branch {name} {tip}")
-            case RemoveWorktree(path=path) if candidate.worktree and candidate.worktree.detached:
-                commands.append(f"git worktree add --detach {path} {candidate.worktree.head}")
-    return tuple(commands)
+def _recovery(done: Sequence[Action]) -> tuple[str, ...]:
+    """Commands that recreate the branches deleted by `done`."""
+    return tuple(
+        f"git branch {shlex.quote(action.name)} {action.tip}"
+        for action in done
+        if isinstance(action, DeleteBranch)
+    )

@@ -1,5 +1,6 @@
 import pytest
 
+from git_janitor import clean as clean_module
 from git_janitor.analysis import analyze
 from git_janitor.clean import Outcome, clean
 from git_janitor.model import Verdict
@@ -28,6 +29,7 @@ def test_clean_removes_worktree_and_branch(sandbox):
     assert outcome.recovery == (f"git branch feat {tip}",)
     assert not path.exists()
     assert "feat" not in local_branches(sandbox)
+    assert "branch.feat." not in sandbox.git("config", "--list")
 
 
 def test_clean_removes_worktree_with_disposable_ignored_files(sandbox):
@@ -119,3 +121,98 @@ def test_clean_failure_reports_recovery_only_for_completed_actions(sandbox, unre
     assert "worktree remove" in outcome.detail
     assert outcome.recovery == ()
     assert "feat" in local_branches(sandbox)
+
+
+@pytest.fixture
+def after_analysis(monkeypatch):
+    """Run a function between `clean`'s analysis and its deletions."""
+
+    def install(race):
+        def analyze_then_race(*args, **kwargs):
+            report = analyze(*args, **kwargs)
+            race()
+            return report
+
+        monkeypatch.setattr(clean_module, "analyze", analyze_then_race)
+
+    return install
+
+
+def test_clean_keeps_branch_whose_worktree_got_new_commits(sandbox, after_analysis):
+    path = merged_branch_in_worktree(sandbox)
+    new_commits = []
+    after_analysis(lambda: new_commits.append(sandbox.commit(cwd=path)))
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert "changed since the analysis" in outcome.detail
+    assert path.exists()
+    assert sandbox.tip("feat") == new_commits[0]
+
+
+def test_clean_keeps_branch_that_moved(sandbox, after_analysis):
+    sandbox.new_branch("feat")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    moved = sandbox.git("commit-tree", "feat^{tree}", "-p", "feat", "-m", "Moved")
+    after_analysis(lambda: sandbox.git("update-ref", "refs/heads/feat", moved))
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert outcome.recovery == ()
+    assert sandbox.tip("feat") == moved
+
+
+def test_clean_keeps_worktree_that_gained_precious_files(sandbox, global_excludes, after_analysis):
+    global_excludes.write_text(".plans/\n")
+    path = merged_branch_in_worktree(sandbox)
+
+    def add_plan():
+        (path / ".plans").mkdir()
+        (path / ".plans" / "plan.md").write_text("plan\n")
+
+    after_analysis(add_plan)
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert "precious_files" in outcome.detail
+    assert (path / ".plans" / "plan.md").exists()
+
+
+def test_clean_keeps_branch_checked_out_after_analysis(sandbox, after_analysis):
+    sandbox.new_branch("feat")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    after_analysis(lambda: sandbox.add_worktree("feat"))
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    assert result.outcomes[0].outcome is Outcome.FAILED
+    assert "feat" in local_branches(sandbox)
+
+
+def test_clean_recovery_commands_are_shell_quoted(sandbox):
+    sandbox.new_branch("feat;echo")
+    sandbox.squash_merge(sandbox.open_pr("feat;echo"))
+    tip = sandbox.tip("feat;echo")
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat;echo"], dry_run=True)
+
+    assert result.outcomes[0].recovery == (f"git branch 'feat;echo' {tip}",)
+
+
+def test_clean_runs_each_candidate_once(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat", str(path)])
+
+    assert [(o.id, o.outcome) for o in result.outcomes] == [("feat", Outcome.DELETED)]
+
+
+def test_clean_rejects_targets_with_all(sandbox):
+    with pytest.raises(ValueError):
+        clean(sandbox.repo, sandbox.github, targets=["feat"], all=True)

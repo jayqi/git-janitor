@@ -13,8 +13,16 @@ from typing import ClassVar
 class Branch:
     name: str
     tip: str
-    upstream: str | None
+    upstream_remote: str | None
+    upstream_branch: str | None
     upstream_gone: bool
+
+    @property
+    def upstream(self) -> str | None:
+        """The upstream as `<remote>/<branch>`."""
+        if self.upstream_remote and self.upstream_branch:
+            return f"{self.upstream_remote}/{self.upstream_branch}"
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +123,9 @@ class BlockerCode(StrEnum):
     IS_CURRENT = "is_current"
     IS_MAIN = "is_main"
     STASHES = "stashes"
+    NESTED_WORKTREE = "nested_worktree"
+    MULTIPLE_WORKTREES = "multiple_worktrees"
+    BROKEN_WORKTREE = "broken_worktree"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +197,33 @@ class StashesBlocker:
         return f"{len(self.stashes)} stash entries made on this branch"
 
 
+@dataclass(frozen=True, slots=True)
+class NestedWorktreeBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.NESTED_WORKTREE
+    paths: tuple[str, ...]
+    """Paths of the nested worktrees, relative to this worktree's root."""
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.paths)} other worktrees inside this worktree"
+
+
+@dataclass(frozen=True, slots=True)
+class MultipleWorktreesBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.MULTIPLE_WORKTREES
+    paths: tuple[str, ...]
+
+    @property
+    def detail(self) -> str:
+        return f"checked out in {len(self.paths)} worktrees"
+
+
+@dataclass(frozen=True, slots=True)
+class BrokenWorktreeBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.BROKEN_WORKTREE
+    detail: ClassVar[str] = "the directory exists, but git no longer recognizes it as a worktree"
+
+
 type Blocker = (
     DirtyBlocker
     | UntrackedBlocker
@@ -195,6 +233,9 @@ type Blocker = (
     | IsCurrentBlocker
     | IsMainBlocker
     | StashesBlocker
+    | NestedWorktreeBlocker
+    | MultipleWorktreesBlocker
+    | BrokenWorktreeBlocker
 )
 
 
@@ -250,11 +291,12 @@ class Report:
         raise KeyError(id)
 
     def find(self, target: str, cwd: Path) -> Candidate | None:
-        """Find a candidate by id, or by a worktree path relative to `cwd`."""
-        path = (cwd / target).resolve()
+        """Find a candidate by id, or else by a worktree path relative to `cwd`."""
         for candidate in self.candidates:
             if candidate.id == target:
                 return candidate
+        path = (cwd / target).resolve()
+        for candidate in self.candidates:
             if candidate.worktree and candidate.worktree.path.resolve() == path:
                 return candidate
         return None

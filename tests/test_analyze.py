@@ -154,3 +154,70 @@ def test_most_recent_matching_pull_request_decides_status(sandbox):
         (second, True),
         (first, True),
     ]
+
+
+def test_fresh_branch_reusing_merged_pull_request_name_needs_review(sandbox):
+    sandbox.new_branch("fix")
+    sandbox.squash_merge(sandbox.open_pr("fix"))
+    sandbox.git("branch", "-D", "fix")
+    sandbox.git("branch", "fix", "main")  # Local main predates the squash commit
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("fix")
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert candidate.verdict is Verdict.REVIEW
+
+
+def test_branch_sharing_a_name_with_a_tag(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("tag", "feat", "main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.branch.name == "feat"
+    assert candidate.branch.upstream == "origin/feat"
+    assert candidate.status is Status.MERGED
+
+
+def test_unfetchable_pull_request_head_does_not_count_as_match(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    sandbox.push_to_pr_from_elsewhere(pr)
+    sandbox.squash_merge(pr)
+    sandbox.git("update-ref", "-d", f"refs/pull/{pr}/head", cwd=sandbox.origin)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.NO_PR
+    assert candidate.verdict is Verdict.REVIEW
+
+
+def test_find_prefers_candidate_id_over_worktree_path(sandbox):
+    sandbox.new_branch("zeta")
+    sandbox.git("worktree", "add", "-q", "-b", "alpha", str(sandbox.root / "zeta"), "main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.find("zeta", cwd=sandbox.root).id == "zeta"
+    assert report.find("./zeta", cwd=sandbox.root).id == "alpha"
+
+
+def test_commit_and_stash_messages_with_unicode_line_separators(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    sandbox.squash_merge(pr)
+    sandbox.git("checkout", "-q", "feat")
+    sandbox.commit(message="Before after")
+    (sandbox.repo / "file1.txt").write_text("unsaved\n")
+    sandbox.git("stash", "push", "-m", "idea more")
+    sandbox.git("checkout", "-q", "main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    [extra] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
+    assert [c.subject for c in extra.commits] == ["Before after"]
