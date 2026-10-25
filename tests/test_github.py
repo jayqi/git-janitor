@@ -9,8 +9,9 @@ from git_janitor.model import PullRequest, PullRequestState
 class FakeGh:
     """Stands in for the `gh` executable, answering GraphQL queries from canned pull requests."""
 
-    def __init__(self, prs_by_head=None, default_branch="main"):
+    def __init__(self, prs_by_head=None, default_branch="main", prs_by_commit=None):
         self.prs_by_head = prs_by_head or {}
+        self.prs_by_commit = prs_by_commit or {}
         self.default_branch = default_branch
         self.calls = []
 
@@ -25,6 +26,10 @@ class FakeGh:
             if key.startswith("head"):
                 alias = key.replace("head", "pr")
                 repository[alias] = {"nodes": self.prs_by_head.get(head, [])}
+            elif key.startswith("commit"):
+                alias = key.replace("commit", "c")
+                nodes = self.prs_by_commit.get(head)
+                repository[alias] = nodes and {"associatedPullRequests": {"nodes": nodes}}
         return json.dumps({"data": {"repository": repository}})
 
     def variables(self, call):
@@ -157,3 +162,25 @@ def test_missing_gh_raises_github_error(monkeypatch):
 
     with pytest.raises(GitHubError, match="not installed"):
         run_gh(["api", "graphql"])
+
+
+def test_fetch_looks_up_pull_requests_by_commit():
+    gh = FakeGh(prs_by_commit={"aaa111": [pr_node(3, "renamed", oid="aaa111")]})
+    client = GhGitHubClient(run_gh=gh, batch_size=2)
+
+    data = client.fetch("git@github.com:owner/repo.git", ["feat"], commits=["aaa111", "bbb222"])
+
+    assert len(gh.calls) == 2
+    assert data.pull_requests_by_commit == {
+        "aaa111": [
+            PullRequest(
+                number=3,
+                url="https://github.com/owner/repo/pull/3",
+                state=PullRequestState.MERGED,
+                base="main",
+                head_name="renamed",
+                head_oid="aaa111",
+            )
+        ],
+        "bbb222": [],
+    }

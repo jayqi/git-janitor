@@ -26,7 +26,7 @@ Use red/green test-driven development: write failing tests first before implemen
 The analysis runs in this order:
 
 1. Fetch origin (unless `--no-fetch`).
-2. Query GitHub once, in batches, for the default branch and the pull requests for every local branch's head name.
+2. Query GitHub once, in batches, for the default branch, the pull requests for every local branch's head name, and the pull requests associated with every detached worktree's HEAD commit.
 3. Classify each **tip** (a branch ref or a detached worktree HEAD) into a status.
 4. Check each worktree for blockers.
 5. Join them into **candidates**: one per branch, branch plus worktree, or detached worktree. Each gets a verdict and an ordered list of actions.
@@ -46,10 +46,10 @@ These are the reasons the tool exists. Don't weaken them without an explicit dec
 
 - A pull request only counts if the local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch. Matching by branch name alone is never enough.
 - Only merges into the default branch count.
-- Only `merged` candidates with no blockers get the `delete` verdict.
-- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option.
+- Only `merged` and `no_unique_commits` candidates with no blockers get the `delete` verdict. Worktrees with no commits of their own stay blocked until inactive for `janitor.minAge`.
+- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides blockers that `git worktree remove` doesn't check itself, and only for explicit targets.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
-- Each deletion re-checks its target immediately beforehand: a worktree's HEAD commit, branch, and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
+- Each deletion re-checks its target immediately beforehand: a worktree's HEAD commit, branch, activity, and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
 - Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, and a failed ancestry check is an error rather than a "no".
 - Nothing on the remote is ever modified.
 

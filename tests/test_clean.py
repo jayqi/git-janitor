@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+import os
 import shutil
 
 import pytest
@@ -6,7 +8,7 @@ from git_janitor import clean as clean_module
 from git_janitor import git
 from git_janitor.analysis import analyze
 from git_janitor.clean import clean
-from git_janitor.model import Outcome, Verdict
+from git_janitor.model import BlockerCode, Outcome, Verdict
 
 
 def merged_branch_in_worktree(sandbox, name="feat"):
@@ -262,3 +264,92 @@ def test_clean_reports_filesystem_errors_and_continues(sandbox, after_analysis, 
         ("second", Outcome.DELETED),
     ]
     assert "Permission denied" in result.outcomes[0].detail
+
+
+def test_clean_keeps_inactive_worktree_that_became_active(sandbox, after_analysis):
+    path = sandbox.add_worktree("fresh", create=True)
+    later = datetime.now(UTC) + timedelta(days=8)
+
+    def touch_index():
+        os.utime(path / "file1.txt", (1_900_000_000, 1_900_000_000))
+        sandbox.git("update-index", "--refresh", cwd=path)
+
+    after_analysis(touch_index)
+
+    result = clean(sandbox.repo, sandbox.github, targets=["fresh"], now=later)
+
+    assert result.outcomes[0].outcome is Outcome.FAILED
+    assert "changed since the analysis" in result.outcomes[0].detail
+    assert path.exists()
+
+
+def worktree_with_plans(sandbox, global_excludes):
+    global_excludes.write_text(".plans/\n")
+    path = merged_branch_in_worktree(sandbox)
+    (path / ".plans").mkdir()
+    (path / ".plans" / "plan.md").write_text("plan\n")
+    return path
+
+
+def test_clean_accepting_precious_files_deletes_worktree(sandbox, global_excludes):
+    path = worktree_with_plans(sandbox, global_excludes)
+
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.PRECIOUS_FILES]
+    )
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.DELETED
+    assert outcome.verdict is Verdict.REVIEW
+    assert outcome.accepted == (BlockerCode.PRECIOUS_FILES,)
+    assert not path.exists()
+
+
+def test_clean_refuses_blockers_that_were_not_accepted(sandbox, global_excludes):
+    path = worktree_with_plans(sandbox, global_excludes)
+    (path / "notes.txt").write_text("notes\n")
+
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.PRECIOUS_FILES]
+    )
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.REFUSED
+    assert outcome.detail == "verdict is review, not delete; blockers: untracked"
+    assert path.exists()
+
+
+def test_clean_accepting_stashes_keeps_the_stash(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("checkout", "-q", "feat")
+    (sandbox.repo / "file1.txt").write_text("unsaved\n")
+    sandbox.git("stash", "push", "-m", "idea")
+    sandbox.git("checkout", "-q", "main")
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.STASHES])
+
+    assert result.outcomes[0].outcome is Outcome.DELETED
+    assert "On feat: idea" in sandbox.git("stash", "list")
+
+
+def test_clean_accepting_recent_activity_deletes_fresh_worktree(sandbox):
+    path = sandbox.add_worktree("fresh", create=True)
+
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["fresh"], accept=[BlockerCode.RECENT_ACTIVITY]
+    )
+
+    assert result.outcomes[0].outcome is Outcome.DELETED
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("code", [BlockerCode.UNTRACKED, BlockerCode.DIRTY, BlockerCode.IS_MAIN])
+def test_clean_rejects_blockers_that_cannot_be_accepted(sandbox, code):
+    with pytest.raises(ValueError, match="can't be accepted"):
+        clean(sandbox.repo, sandbox.github, targets=["feat"], accept=[code])
+
+
+def test_clean_rejects_accept_with_all(sandbox):
+    with pytest.raises(ValueError, match="targets"):
+        clean(sandbox.repo, sandbox.github, all=True, accept=[BlockerCode.STASHES])

@@ -111,14 +111,14 @@ def test_reused_branch_name_does_not_inherit_old_merged_pull_request(sandbox):
     )
 
 
-def test_branch_without_commits_of_its_own_needs_review(sandbox):
+def test_branch_without_commits_of_its_own_or_worktree_is_deletable(sandbox):
     sandbox.git("branch", "fresh", "main")
 
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("fresh")
     assert candidate.status is Status.NO_UNIQUE_COMMITS
-    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.verdict is Verdict.DELETE
 
 
 def test_default_branch_is_kept_and_never_deleted(sandbox):
@@ -160,7 +160,7 @@ def test_most_recent_matching_pull_request_decides_status(sandbox):
     ]
 
 
-def test_fresh_branch_reusing_merged_pull_request_name_needs_review(sandbox):
+def test_fresh_branch_reusing_merged_pull_request_name_has_no_unique_commits(sandbox):
     sandbox.new_branch("fix")
     sandbox.squash_merge(sandbox.open_pr("fix"))
     sandbox.git("branch", "-D", "fix")
@@ -170,7 +170,6 @@ def test_fresh_branch_reusing_merged_pull_request_name_needs_review(sandbox):
 
     candidate = report.candidate("fix")
     assert candidate.status is Status.NO_UNIQUE_COMMITS
-    assert candidate.verdict is Verdict.REVIEW
 
 
 def test_branch_sharing_a_name_with_a_tag(sandbox):

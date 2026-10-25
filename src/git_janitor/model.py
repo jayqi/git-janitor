@@ -1,7 +1,8 @@
 """What git-janitor knows about a repository's branches and worktrees, and what it concludes."""
 
+from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -131,6 +132,7 @@ class BlockerCode(StrEnum):
     SUBMODULES = "submodules"
     NESTED_REPOSITORY = "nested_repository"
     UNREADABLE = "unreadable"
+    RECENT_ACTIVITY = "recent_activity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +274,16 @@ class UnreadableBlocker:
         return f"{len(self.paths)} ignored paths couldn't be read"
 
 
+@dataclass(frozen=True, slots=True)
+class RecentActivityBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.RECENT_ACTIVITY
+    min_age: timedelta
+
+    @property
+    def detail(self) -> str:
+        return f"active within the last {format_duration(self.min_age)} (janitor.minAge)"
+
+
 type Blocker = (
     DirtyBlocker
     | UntrackedBlocker
@@ -288,6 +300,7 @@ type Blocker = (
     | SubmodulesBlocker
     | NestedRepositoryBlocker
     | UnreadableBlocker
+    | RecentActivityBlocker
 )
 
 
@@ -316,16 +329,40 @@ class Candidate:
     blockers: tuple[Blocker, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     actions: tuple[Action, ...] = ()
+    last_activity: datetime | None = None
+    """When the branch or worktree last changed, from git's reflogs and worktree files."""
 
     @property
     def verdict(self) -> Verdict:
+        return self.verdict_accepting(())
+
+    def verdict_accepting(self, accepted: Collection[BlockerCode]) -> Verdict:
+        """The verdict if blockers with the `accepted` codes are ignored."""
         if self.status is Status.PR_OPEN:
             return Verdict.KEEP
         if self.status is Status.DEFAULT_BRANCH and not self.actions:
             return Verdict.KEEP
-        if self.status is Status.MERGED and not self.blockers:
+        if self.status in DELETABLE_STATUSES and not self.unaccepted_blockers(accepted):
             return Verdict.DELETE
         return Verdict.REVIEW
+
+    def unaccepted_blockers(self, accepted: Collection[BlockerCode]) -> tuple[Blocker, ...]:
+        return tuple(b for b in self.blockers if b.code not in accepted)
+
+
+DELETABLE_STATUSES = frozenset({Status.MERGED, Status.NO_UNIQUE_COMMITS})
+"""Statuses where deleting loses no commits."""
+
+ACCEPTABLE_BLOCKERS = frozenset(
+    {
+        BlockerCode.PRECIOUS_FILES,
+        BlockerCode.NESTED_REPOSITORY,
+        BlockerCode.UNREADABLE,
+        BlockerCode.STASHES,
+        BlockerCode.RECENT_ACTIVITY,
+    }
+)
+"""Blockers that `clean` can be told to accept. `git worktree remove` doesn't check these."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +411,8 @@ class TargetOutcome:
     """The candidate's planned actions."""
     recovery: tuple[str, ...] = ()
     """Commands that restore what the completed actions made unreachable."""
+    accepted: tuple[BlockerCode, ...] = ()
+    """The candidate's blockers that were accepted."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,3 +423,25 @@ class CleanResult:
     @property
     def ok(self) -> bool:
         return all(o.outcome in (Outcome.DELETED, Outcome.WOULD_DELETE) for o in self.outcomes)
+
+
+DURATION_UNITS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def parse_duration(text: str) -> timedelta:
+    """Parse a duration like `7d`, `12h`, `30m`, `45s`, or `0`."""
+    text = text.strip()
+    if text == "0":
+        return timedelta(0)
+    number, unit = text[:-1], text[-1:]
+    if not number.isdigit() or unit not in DURATION_UNITS:
+        raise ValueError(f"Invalid duration {text!r}; expected something like 7d, 12h, or 30m.")
+    return timedelta(seconds=int(number) * DURATION_UNITS[unit])
+
+
+def format_duration(duration: timedelta) -> str:
+    seconds = int(duration.total_seconds())
+    for unit, size in DURATION_UNITS.items():
+        if seconds and seconds % size == 0:
+            return f"{seconds // size}{unit}"
+    return "0"

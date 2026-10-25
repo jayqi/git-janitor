@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 import os
 import shutil
 import sys
@@ -18,6 +19,8 @@ from git_janitor.model import (
     NestedRepositoryBlocker,
     NestedWorktreeBlocker,
     PreciousFilesBlocker,
+    PullRequestEvidence,
+    RecentActivityBlocker,
     RemoveWorktree,
     StashesBlocker,
     Status,
@@ -519,3 +522,116 @@ def test_non_utf8_file_names(sandbox):
 
     paths = blocker(report.candidate("feat"), UntrackedBlocker).paths
     assert paths == (os.fsdecode(b"notes-\xff.txt"),)
+
+
+def days_from_now(days):
+    return datetime.now(UTC) + timedelta(days=days)
+
+
+def test_recently_created_worktree_without_unique_commits_needs_review(sandbox):
+    path = sandbox.add_worktree("fresh", create=True)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("fresh")
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (RecentActivityBlocker(min_age=timedelta(days=7)),)
+    assert candidate.worktree.path == path
+
+
+def test_inactive_worktree_without_unique_commits_is_deletable(sandbox):
+    path = sandbox.add_worktree("fresh", create=True)
+
+    report = analyze(sandbox.repo, sandbox.github, now=days_from_now(8))
+
+    candidate = report.candidate("fresh")
+    assert candidate.verdict is Verdict.DELETE
+    assert candidate.actions == (
+        RemoveWorktree(path=path),
+        DeleteBranch(name="fresh", tip=sandbox.tip("main")),
+    )
+
+
+def test_detached_worktree_in_default_branch_is_deletable_once_inactive(sandbox):
+    path = sandbox.add_detached_worktree("scratch")
+
+    recent = analyze(sandbox.repo, sandbox.github).candidate(str(path))
+    inactive = analyze(sandbox.repo, sandbox.github, now=days_from_now(8)).candidate(str(path))
+
+    assert recent.verdict is Verdict.REVIEW
+    assert inactive.verdict is Verdict.DELETE
+
+
+def test_minimum_age_is_configurable(sandbox):
+    sandbox.add_worktree("fresh", create=True)
+    sandbox.git("config", "janitor.minAge", "2h")
+
+    report = analyze(sandbox.repo, sandbox.github, now=datetime.now(UTC) + timedelta(hours=3))
+
+    assert report.candidate("fresh").verdict is Verdict.DELETE
+
+
+def test_invalid_minimum_age_is_an_error(sandbox):
+    sandbox.git("config", "janitor.minAge", "soon")
+
+    with pytest.raises(ValueError, match="janitor.minAge"):
+        analyze(sandbox.repo, sandbox.github)
+
+
+def test_merged_worktree_is_deletable_without_waiting(sandbox):
+    merged_branch_in_worktree(sandbox)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
+
+
+def test_last_activity_reflects_latest_worktree_change(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    before = datetime.now(UTC).replace(microsecond=0)
+    sandbox.commit(cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    last_activity = report.candidate("feat").last_activity
+    assert before <= last_activity <= datetime.now(UTC)
+
+
+def test_last_activity_of_branch_without_worktree(sandbox):
+    before = datetime.now(UTC).replace(microsecond=0)
+    sandbox.new_branch("feat")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert before <= report.candidate("feat").last_activity <= datetime.now(UTC)
+
+
+def detached_worktree_at_pull_request_head(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    head = sandbox.tip("feat")
+    sandbox.git("branch", "-D", "feat")
+    return sandbox.add_detached_worktree("review", commit=head), pr
+
+
+def test_detached_worktree_at_merged_pull_request_head_is_deletable(sandbox):
+    path, pr = detached_worktree_at_pull_request_head(sandbox)
+    sandbox.squash_merge(pr)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate(str(path))
+    assert candidate.status is Status.MERGED
+    assert candidate.verdict is Verdict.DELETE
+    assert candidate.evidence == (
+        PullRequestEvidence(pull_request=sandbox.github.get(pr), matched=True),
+    )
+
+
+def test_detached_worktree_at_open_pull_request_head_is_kept(sandbox):
+    path, _ = detached_worktree_at_pull_request_head(sandbox)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate(str(path)).status is Status.PR_OPEN

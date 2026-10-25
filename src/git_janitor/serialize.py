@@ -76,6 +76,7 @@ def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
         "blockers": [blocker_to_dict(b) for b in candidate.blockers],
         "evidence": [evidence_to_dict(e) for e in candidate.evidence],
         "actions": [action_to_dict(a) for a in candidate.actions],
+        "last_activity": candidate.last_activity and candidate.last_activity.isoformat(),
     }
 
 
@@ -140,4 +141,5 @@ def outcome_to_dict(outcome: TargetOutcome) -> dict[str, Any]:
         "detail": outcome.detail,
         "actions": [action_to_dict(a) for a in outcome.actions],
         "recovery": list(outcome.recovery),
+        "accepted": [str(code) for code in outcome.accepted],
     }

@@ -15,16 +15,20 @@ class FakeGitHub:
     name_with_owner: str = "owner/repo"
     pull_requests: list[PullRequest] = field(default_factory=list)
 
-    def fetch(self, remote_url: str, head_names: Sequence[str]) -> GitHubData:
-        wanted = set(head_names)
-        by_head: dict[str, list[PullRequest]] = {}
-        for pr in self.pull_requests:
-            if pr.head_name in wanted:
-                by_head.setdefault(pr.head_name, []).append(pr)
+    def fetch(
+        self, remote_url: str, head_names: Sequence[str], commits: Sequence[str] = ()
+    ) -> GitHubData:
+        by_head = {
+            name: [pr for pr in self.pull_requests if pr.head_name == name] for name in head_names
+        }
+        by_commit = {
+            sha: [pr for pr in self.pull_requests if pr.head_oid == sha] for sha in commits
+        }
         return GitHubData(
             name_with_owner=self.name_with_owner,
             default_branch=self.default_branch,
             pull_requests=by_head,
+            pull_requests_by_commit=by_commit,
         )
 
     def get(self, number: int) -> PullRequest:

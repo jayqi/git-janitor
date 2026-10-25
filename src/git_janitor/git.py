@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import os
 from pathlib import Path
 import subprocess
@@ -74,6 +75,32 @@ def is_ancestor(ancestor: str, descendant: str, cwd: Path) -> bool:
     if result.returncode not in (0, 1):
         raise GitError(f"git merge-base --is-ancestor failed: {result.stderr.strip()}")
     return result.returncode == 0
+
+
+def reflog_time(ref: str, cwd: Path) -> datetime | None:
+    """When `ref`'s reflog was last written, if it has one."""
+    result = _git(["log", "-g", "-1", "--date=unix", "--format=%gd", ref], cwd)
+    selector = result.stdout.strip()
+    if result.returncode != 0 or not selector.endswith("}"):
+        return None
+    return datetime.fromtimestamp(int(selector.rsplit("@{", 1)[1][:-1]), tz=UTC)
+
+
+def worktree_activity(worktree: Path) -> datetime | None:
+    """When a linked worktree last changed, from its HEAD reflog, index, and admin directory."""
+    if not worktree.is_dir():
+        return None
+    result = _git(["rev-parse", "--git-dir", "--git-path", "index"], worktree)
+    if result.returncode != 0:
+        return None
+    git_dir, index = _lines(result.stdout)
+    times = [reflog_time("HEAD", cwd=worktree)]
+    for path in (worktree / git_dir, worktree / index):
+        try:
+            times.append(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
+        except OSError:
+            pass
+    return max((t for t in times if t is not None), default=None)
 
 
 def ref_exists(ref: str, cwd: Path) -> bool:

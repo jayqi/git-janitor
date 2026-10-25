@@ -1,4 +1,5 @@
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
+from datetime import datetime
 from pathlib import Path
 import shlex
 
@@ -6,7 +7,9 @@ from git_janitor import git
 from git_janitor.analysis import analyze, worktree_blockers
 from git_janitor.github import GitHubClient
 from git_janitor.model import (
+    ACCEPTABLE_BLOCKERS,
     Action,
+    BlockerCode,
     Candidate,
     CleanResult,
     DeleteBranch,
@@ -26,15 +29,24 @@ def clean(
     dry_run: bool = False,
     fetch: bool = True,
     cwd: Path | None = None,
+    now: datetime | None = None,
+    accept: Collection[BlockerCode] = (),
 ) -> CleanResult:
     """Re-analyze `repo` and carry out the actions of targets with a delete verdict.
 
-    Each action first checks that its target hasn't changed since the analysis.
+    Each action first checks that its target hasn't changed since the analysis. Blockers with
+    codes in `accept` are ignored for explicit targets.
     """
     if bool(targets) == all:
         raise ValueError("Pass either targets or all=True.")
+    accept = frozenset(accept)
+    if not_acceptable := accept - ACCEPTABLE_BLOCKERS:
+        codes = ", ".join(sorted(not_acceptable))
+        raise ValueError(f"{codes} can't be accepted")
+    if accept and all:
+        raise ValueError("Accepting blockers requires explicit targets.")
     cwd = (cwd or Path.cwd()).resolve()
-    report = analyze(repo, github, fetch=fetch, cwd=cwd)
+    report = analyze(repo, github, fetch=fetch, cwd=cwd, now=now)
 
     if all:
         selected: list[Candidate | str] = [
@@ -52,7 +64,7 @@ def clean(
     outcomes = [
         TargetOutcome(id=item, outcome=Outcome.NOT_FOUND, detail="no such candidate")
         if isinstance(item, str)
-        else _clean_candidate(item, repo, cwd, dry_run=dry_run)
+        else _clean_candidate(item, repo, cwd, accept, dry_run=dry_run)
         for item in selected
     ]
     return CleanResult(report=report, outcomes=tuple(outcomes))
@@ -63,8 +75,15 @@ class ChangedSinceAnalysisError(Exception):
 
 
 def _clean_candidate(
-    candidate: Candidate, repo: Path, cwd: Path, *, dry_run: bool
+    candidate: Candidate,
+    repo: Path,
+    cwd: Path,
+    accept: frozenset[BlockerCode],
+    *,
+    dry_run: bool,
 ) -> TargetOutcome:
+    accepted = tuple(dict.fromkeys(b.code for b in candidate.blockers if b.code in accept))
+
     def outcome(outcome: Outcome, detail: str = "", done: Sequence[Action] = ()) -> TargetOutcome:
         return TargetOutcome(
             id=candidate.id,
@@ -73,24 +92,35 @@ def _clean_candidate(
             detail=detail,
             actions=candidate.actions,
             recovery=_recovery(done),
+            accepted=accepted,
         )
 
-    if candidate.verdict is not Verdict.DELETE:
-        return outcome(Outcome.REFUSED, f"verdict is {candidate.verdict}, not delete")
+    verdict = candidate.verdict_accepting(accept)
+    if verdict is not Verdict.DELETE:
+        detail = f"verdict is {verdict}, not delete"
+        if blockers := candidate.unaccepted_blockers(accept):
+            detail += f"; blockers: {', '.join(str(b.code) for b in blockers)}"
+        return outcome(Outcome.REFUSED, detail)
     if dry_run:
         return outcome(Outcome.WOULD_DELETE, done=candidate.actions)
 
     done: list[Action] = []
     for action in candidate.actions:
         try:
-            _execute(action, candidate, repo, cwd)
+            _execute(action, candidate, repo, cwd, accept)
         except (git.GitError, ChangedSinceAnalysisError, OSError) as exc:
             return outcome(Outcome.FAILED, str(exc), done)
         done.append(action)
     return outcome(Outcome.DELETED, done=done)
 
 
-def _execute(action: Action, candidate: Candidate, repo: Path, cwd: Path) -> None:
+def _execute(
+    action: Action,
+    candidate: Candidate,
+    repo: Path,
+    cwd: Path,
+    accept: frozenset[BlockerCode],
+) -> None:
     worktrees = git.list_worktrees(repo)
     match action:
         case RemoveWorktree(path=path):
@@ -102,7 +132,14 @@ def _execute(action: Action, candidate: Candidate, repo: Path, cwd: Path) -> Non
                 candidate.worktree.branch,
             ):
                 raise ChangedSinceAnalysisError(f"HEAD of {path} changed since the analysis")
-            blockers = worktree_blockers(current, worktrees, cwd)
+            activity = git.worktree_activity(path)
+            if activity and (
+                candidate.last_activity is None or activity > candidate.last_activity
+            ):
+                raise ChangedSinceAnalysisError(f"{path} changed since the analysis")
+            blockers = [
+                b for b in worktree_blockers(current, worktrees, cwd) if b.code not in accept
+            ]
             if blockers:
                 codes = ", ".join(str(b.code) for b in blockers)
                 raise ChangedSinceAnalysisError(f"{path} has new blockers: {codes}")

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from git_janitor import git
@@ -24,6 +25,7 @@ from git_janitor.model import (
     PullRequest,
     PullRequestEvidence,
     PullRequestState,
+    RecentActivityBlocker,
     RemoveWorktree,
     Report,
     Stash,
@@ -33,20 +35,31 @@ from git_janitor.model import (
     UnreadableBlocker,
     UntrackedBlocker,
     Worktree,
+    parse_duration,
 )
 from git_janitor.precious import scan_ignored
 
 REMOTE = "origin"
+MIN_AGE_CONFIG_KEY = "janitor.minAge"
+DEFAULT_MIN_AGE = timedelta(days=7)
 
 
 def analyze(
-    repo: Path, github: GitHubClient, *, fetch: bool = True, cwd: Path | None = None
+    repo: Path,
+    github: GitHubClient,
+    *,
+    fetch: bool = True,
+    cwd: Path | None = None,
+    now: datetime | None = None,
 ) -> Report:
     """Analyze the local branches and worktrees of `repo`.
 
-    `cwd` is the caller's current directory, used to detect worktrees that are in use.
+    `cwd` is the caller's current directory, used to detect worktrees that are in use. `now` is
+    the time that activity ages are measured against.
     """
     cwd = (cwd or Path.cwd()).resolve()
+    now = now or datetime.now(UTC)
+    min_age = _min_age(repo)
     if fetch:
         git.fetch(REMOTE, cwd=repo)
     branches = git.list_branches(repo)
@@ -57,7 +70,10 @@ def analyze(
             worktrees_by_branch.setdefault(worktree.branch, []).append(worktree)
     stashes = git.list_stashes(repo)
     head_names = sorted({name for branch in branches for name in _head_names(branch)})
-    data = github.fetch(git.remote_url(REMOTE, cwd=repo), head_names)
+    detached_heads = sorted(
+        {wt.head for wt in worktrees if wt.branch is None and not wt.is_main and wt.head}
+    )
+    data = github.fetch(git.remote_url(REMOTE, cwd=repo), head_names, detached_heads)
     default_branch = data.default_branch
     default_ref = f"refs/remotes/{REMOTE}/{default_branch}"
     if not git.ref_exists(default_ref, cwd=repo):
@@ -76,13 +92,20 @@ def analyze(
                 for name in _head_names(branch) - {default_branch}
                 for pr in data.pull_requests.get(name, [])
             ]
-            status, evidence = _classify_branch(branch, prs, default_ref, default_branch, repo)
+            status, evidence = _classify_tip(branch.tip, prs, default_ref, default_branch, repo)
         branch_worktrees = worktrees_by_branch.get(branch.name, [])
         worktree = branch_worktrees[0] if branch_worktrees else None
         blockers = _branch_blockers(branch, status, worktree, worktrees, stashes, cwd)
         if len(branch_worktrees) > 1:
             paths = tuple(str(wt.path) for wt in branch_worktrees)
             blockers = (*blockers, MultipleWorktreesBlocker(paths=paths))
+        linked = worktree if worktree and not worktree.is_main else None
+        last_activity = _latest(
+            git.reflog_time(f"refs/heads/{branch.name}", cwd=repo),
+            git.worktree_activity(linked.path) if linked else None,
+        )
+        if linked:
+            blockers = (*blockers, *_recent_activity(status, last_activity, now, min_age))
         candidates.append(
             Candidate(
                 id=branch.name,
@@ -92,6 +115,7 @@ def analyze(
                 blockers=blockers,
                 evidence=evidence,
                 actions=_branch_actions(branch, status, worktree),
+                last_activity=last_activity,
             )
         )
 
@@ -100,17 +124,24 @@ def analyze(
         if worktree.is_main or worktree.branch in branch_names:
             continue
         if worktree.branch is None:
-            status = _classify_unmatched(worktree.head, default_ref, repo)
+            prs = data.pull_requests_by_commit.get(worktree.head, [])
+            status, evidence = _classify_tip(worktree.head, prs, default_ref, default_branch, repo)
         else:
-            status = Status.BRANCH_MISSING
+            status, evidence = Status.BRANCH_MISSING, ()
+        last_activity = git.worktree_activity(worktree.path)
         candidates.append(
             Candidate(
                 id=str(worktree.path),
                 status=status,
                 branch=None,
                 worktree=worktree,
-                blockers=worktree_blockers(worktree, worktrees, cwd),
+                blockers=(
+                    *worktree_blockers(worktree, worktrees, cwd),
+                    *_recent_activity(status, last_activity, now, min_age),
+                ),
+                evidence=evidence,
                 actions=(RemoveWorktree(path=worktree.path),),
+                last_activity=last_activity,
             )
         )
 
@@ -121,6 +152,33 @@ def analyze(
         fetched=fetch,
         candidates=tuple(candidates),
     )
+
+
+def _min_age(repo: Path) -> timedelta:
+    values = git.config_get_all(MIN_AGE_CONFIG_KEY, repo)
+    if not values:
+        return DEFAULT_MIN_AGE
+    try:
+        return parse_duration(values[-1])
+    except ValueError as exc:
+        raise ValueError(f"{MIN_AGE_CONFIG_KEY}: {exc}") from exc
+
+
+def _latest(*times: datetime | None) -> datetime | None:
+    return max((t for t in times if t is not None), default=None)
+
+
+def _recent_activity(
+    status: Status, last_activity: datetime | None, now: datetime, min_age: timedelta
+) -> tuple[Blocker, ...]:
+    """Protects worktrees with no commits of their own that may be in use, such as one an agent
+    has just created. Worktrees with other statuses have work to lose and are blocked otherwise.
+    """
+    if status is not Status.NO_UNIQUE_COMMITS:
+        return ()
+    if last_activity is not None and now - last_activity >= min_age:
+        return ()
+    return (RecentActivityBlocker(min_age=min_age),)
 
 
 def _branch_actions(
@@ -204,15 +262,16 @@ def _head_names(branch: Branch) -> set[str]:
     return names
 
 
-def _classify_branch(
-    branch: Branch,
+def _classify_tip(
+    tip: str,
     prs: list[PullRequest],
     default_ref: str,
     default_branch: str,
     repo: Path,
 ) -> tuple[Status, tuple[Evidence, ...]]:
-    in_default = git.is_ancestor(branch.tip, default_ref, cwd=repo)
-    matched = {pr.number for pr in prs if _contains(pr, branch.tip, in_default, repo)}
+    """Classify a branch tip or detached HEAD against the pull requests that might contain it."""
+    in_default = git.is_ancestor(tip, default_ref, cwd=repo)
+    matched = {pr.number for pr in prs if _contains(pr, tip, in_default, repo)}
     pr_evidence = tuple(
         PullRequestEvidence(pull_request=pr, matched=pr.number in matched)
         for pr in sorted(prs, key=lambda pr: pr.number, reverse=True)
@@ -241,28 +300,19 @@ def _classify_branch(
             or (pr.state is PullRequestState.MERGED and pr.base == default_branch)
         )
         and git.has_commit(pr.head_oid, cwd=repo)
-        and git.is_ancestor(pr.head_oid, branch.tip, cwd=repo)
+        and git.is_ancestor(pr.head_oid, tip, cwd=repo)
     ]
     if behind:
         open_prs = [pr for pr in behind if pr.state is PullRequestState.OPEN]
         pr = max(open_prs or behind, key=lambda pr: pr.number)
         extra = ExtraCommits(
             pull_request=pr.number,
-            commits=tuple(
-                git.commits_between(pr.head_oid, branch.tip, cwd=repo, exclude=default_ref)
-            ),
+            commits=tuple(git.commits_between(pr.head_oid, tip, cwd=repo, exclude=default_ref)),
         )
         status = Status.PR_OPEN if open_prs else Status.MERGED_PLUS_LOCAL
         return status, (*pr_evidence, extra)
 
     return Status.NO_PR, pr_evidence
-
-
-def _classify_unmatched(tip: str, default_ref: str, repo: Path) -> Status:
-    """Status of a tip that no pull request accounts for."""
-    if git.is_ancestor(tip, default_ref, cwd=repo):
-        return Status.NO_UNIQUE_COMMITS
-    return Status.NO_PR
 
 
 def _contains(pr: PullRequest, tip: str, in_default: bool, repo: Path) -> bool:

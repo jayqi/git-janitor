@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import os
 import shutil
@@ -34,6 +34,7 @@ def test_report_json(in_sandbox):
 
     assert result.exit_code == 0, result.output
     output = json.loads(result.stdout)
+    pop_last_activity(output["candidates"][0])
     assert output["schema_version"] == 1
     assert output["repo"] == str(in_sandbox.repo)
     assert output["github_repo"] == "owner/repo"
@@ -84,6 +85,12 @@ def report_json(*targets):
     return json.loads(result.stdout)
 
 
+def pop_last_activity(candidate):
+    """Remove `last_activity` from a candidate's JSON, checking it's a time from this test."""
+    last_activity = datetime.fromisoformat(candidate.pop("last_activity"))
+    assert datetime.now(UTC) - timedelta(minutes=5) < last_activity <= datetime.now(UTC)
+
+
 def test_report_json_extra_commits(in_sandbox):
     path, pr = merged_branch_in_worktree(in_sandbox)
     extra = in_sandbox.commit(cwd=path, message="Follow-up")
@@ -104,6 +111,7 @@ def test_report_json_detached_worktree(in_sandbox):
 
     [candidate] = report_json(str(path))["candidates"]
 
+    pop_last_activity(candidate)
     assert candidate == {
         "id": str(path),
         "verdict": "review",
@@ -117,7 +125,9 @@ def test_report_json_detached_worktree(in_sandbox):
             "locked": False,
             "prunable": False,
         },
-        "blockers": [],
+        "blockers": [
+            {"code": "recent_activity", "detail": "active within the last 7d (janitor.minAge)"}
+        ],
         "evidence": [],
         "actions": [{"kind": "remove_worktree", "path": str(path)}],
     }
@@ -236,6 +246,7 @@ def test_clean_json_would_delete(in_sandbox):
                     {"kind": "delete_branch", "name": "feat", "tip": tip},
                 ],
                 "recovery": [f"git branch feat {tip}"],
+                "accepted": [],
             }
         ],
     }
@@ -256,6 +267,7 @@ def test_clean_json_refused_and_not_found(in_sandbox):
             "detail": "verdict is keep, not delete",
             "actions": [{"kind": "delete_branch", "name": "feat", "tip": tip}],
             "recovery": [],
+            "accepted": [],
         },
         {
             "id": "nope",
@@ -264,6 +276,7 @@ def test_clean_json_refused_and_not_found(in_sandbox):
             "detail": "no such candidate",
             "actions": [],
             "recovery": [],
+            "accepted": [],
         },
     ]
 
@@ -285,6 +298,7 @@ def test_clean_json_failed(in_sandbox, unremovable_worktree):
             {"kind": "delete_branch", "name": "feat", "tip": tip},
         ],
         "recovery": [],
+        "accepted": [],
     }
 
 
@@ -348,6 +362,7 @@ def test_report_json_branch_without_worktree_and_unmatched_pull_request(in_sandb
 
     [candidate] = report_json("feat")["candidates"]
 
+    pop_last_activity(candidate)
     assert candidate == {
         "id": "feat",
         "verdict": "review",
@@ -446,6 +461,7 @@ def test_clean_json_deleted(in_sandbox):
                 {"kind": "delete_branch", "name": "feat", "tip": tip},
             ],
             "recovery": [f"git branch feat {tip}"],
+            "accepted": [],
         }
     ]
 
@@ -559,6 +575,7 @@ def test_report_json_branch_missing_worktree(in_sandbox):
 
     [candidate] = report_json(str(path))["candidates"]
 
+    pop_last_activity(candidate)
     assert candidate == {
         "id": str(path),
         "verdict": "review",
@@ -576,3 +593,32 @@ def test_report_json_branch_missing_worktree(in_sandbox):
         "evidence": [],
         "actions": [{"kind": "remove_worktree", "path": str(path)}],
     }
+
+
+def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
+    global_excludes.write_text(".plans/\n")
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    (path / ".plans").mkdir()
+    (path / ".plans" / "plan.md").write_text("plan\n")
+
+    exit_code, output = clean_json("--accept", "precious_files,stashes", "feat")
+
+    assert exit_code == 0
+    [outcome] = output["outcomes"]
+    assert outcome["outcome"] == "deleted"
+    assert outcome["verdict"] == "review"
+    assert outcome["accepted"] == ["precious_files"]
+
+
+def test_clean_accept_rejects_other_blockers(in_sandbox):
+    result = runner.invoke(cli.app, ["clean", "--accept", "untracked", "feat"])
+
+    assert result.exit_code == 1
+    assert "untracked" in result.stderr
+
+
+def test_clean_accept_rejects_unknown_blockers(in_sandbox):
+    result = runner.invoke(cli.app, ["clean", "--accept", "nonsense", "feat"])
+
+    assert result.exit_code == 1
+    assert "nonsense" in result.stderr

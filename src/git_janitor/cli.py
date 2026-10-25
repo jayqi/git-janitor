@@ -13,7 +13,14 @@ from git_janitor import git
 from git_janitor.analysis import analyze
 from git_janitor.clean import clean
 from git_janitor.github import GhGitHubClient, GitHubClient, GitHubError
-from git_janitor.model import Candidate, CleanResult, PullRequestEvidence, Verdict
+from git_janitor.model import (
+    ACCEPTABLE_BLOCKERS,
+    BlockerCode,
+    Candidate,
+    CleanResult,
+    PullRequestEvidence,
+    Verdict,
+)
 from git_janitor.serialize import clean_result_to_dict, report_to_dict
 
 app = typer.Typer(
@@ -61,7 +68,7 @@ def report(
     repo = repo_root()
     try:
         result = analyze(repo, github_client(), fetch=not no_fetch)
-    except (git.GitError, GitHubError, OSError) as exc:
+    except (git.GitError, GitHubError, OSError, ValueError) as exc:
         raise fail(str(exc)) from exc
 
     candidates = result.candidates
@@ -87,12 +94,27 @@ def clean_command(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Show what would be deleted.")
     ] = False,
+    accept: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--accept",
+            help=(
+                "Blocker codes to accept for the given targets, comma-separated: "
+                + ", ".join(sorted(ACCEPTABLE_BLOCKERS))
+                + "."
+            ),
+        ),
+    ] = None,
     as_json: JsonOption = False,
     no_fetch: NoFetchOption = False,
 ) -> None:
     """Delete candidates whose verdict is delete. Anything else is refused."""
     if bool(targets) == all:
         raise fail("Pass candidate ids to clean, or --all, but not both.")
+    try:
+        codes = [BlockerCode(c) for value in accept or [] for c in value.split(",") if c]
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
     repo = repo_root()
     try:
         result = clean(
@@ -102,8 +124,9 @@ def clean_command(
             all=all,
             dry_run=dry_run,
             fetch=not no_fetch,
+            accept=codes,
         )
-    except (git.GitError, GitHubError, OSError) as exc:
+    except (git.GitError, GitHubError, OSError, ValueError) as exc:
         raise fail(str(exc)) from exc
 
     if as_json:
