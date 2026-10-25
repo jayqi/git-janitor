@@ -25,8 +25,6 @@ from git_janitor.model import (
     RecentActivityBlocker,
     RemoveWorktree,
     Report,
-    Stash,
-    StashesBlocker,
     Status,
     UnreadableBlocker,
     UntrackedBlocker,
@@ -64,7 +62,6 @@ def analyze(
     for worktree in worktrees:
         if worktree.branch:
             worktrees_by_branch.setdefault(worktree.branch, worktree)
-    stashes = git.list_stashes(repo)
     head_names = sorted({name for branch in branches for name in _head_names(branch)})
     detached_heads = sorted(
         {wt.head for wt in worktrees if wt.branch is None and not wt.is_main and wt.head}
@@ -90,7 +87,7 @@ def analyze(
             ]
             status, evidence = _classify_tip(branch.tip, prs, default_ref, default_branch, repo)
         worktree = worktrees_by_branch.get(branch.name)
-        blockers = _branch_blockers(branch, status, worktree, stashes, cwd)
+        blockers = _branch_blockers(status, worktree, cwd)
         linked = worktree if worktree and not worktree.is_main else None
         last_activity = _latest(
             git.reflog_time(f"refs/heads/{branch.name}", cwd=repo),
@@ -99,7 +96,7 @@ def analyze(
         if linked:
             blockers = (
                 *blockers,
-                *_recent_activity(status, linked, last_activity, now, min_age),
+                *_recent_activity(status, last_activity, now, min_age),
             )
         candidates.append(
             Candidate(
@@ -132,7 +129,7 @@ def analyze(
                 worktree=worktree,
                 blockers=(
                     *worktree_blockers(worktree, cwd),
-                    *_recent_activity(status, worktree, last_activity, now, min_age),
+                    *_recent_activity(status, last_activity, now, min_age),
                 ),
                 evidence=evidence,
                 actions=(RemoveWorktree(path=worktree.path),),
@@ -165,7 +162,6 @@ def _latest(*times: datetime | None) -> datetime | None:
 
 def _recent_activity(
     status: Status,
-    worktree: Worktree,
     last_activity: datetime | None,
     now: datetime,
     min_age: timedelta,
@@ -183,31 +179,21 @@ def _recent_activity(
 def _branch_actions(
     branch: Branch, status: Status, worktree: Worktree | None
 ) -> tuple[Action, ...]:
+    if status is Status.DEFAULT_BRANCH:
+        return ()
     actions: list[Action] = []
     if worktree and not worktree.is_main:
         actions.append(RemoveWorktree(path=worktree.path))
-    if status is not Status.DEFAULT_BRANCH:
-        actions.append(DeleteBranch(name=branch.name, tip=branch.tip))
+    actions.append(DeleteBranch(name=branch.name, tip=branch.tip))
     return tuple(actions)
 
 
-def _branch_blockers(
-    branch: Branch,
-    status: Status,
-    worktree: Worktree | None,
-    stashes: list[Stash],
-    cwd: Path,
-) -> tuple[Blocker, ...]:
-    blockers: list[Blocker] = []
-    if worktree and worktree.is_main:
-        if status is not Status.DEFAULT_BRANCH:
-            blockers.append(IsMainBlocker())
-    elif worktree:
-        blockers.extend(worktree_blockers(worktree, cwd))
-    branch_stashes = tuple(stash for stash in stashes if stash.branch == branch.name)
-    if branch_stashes:
-        blockers.append(StashesBlocker(stashes=branch_stashes))
-    return tuple(blockers)
+def _branch_blockers(status: Status, worktree: Worktree | None, cwd: Path) -> tuple[Blocker, ...]:
+    if worktree is None or status is Status.DEFAULT_BRANCH:
+        return ()
+    if worktree.is_main:
+        return (IsMainBlocker(),)
+    return worktree_blockers(worktree, cwd)
 
 
 def worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
@@ -239,8 +225,8 @@ def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
     scan = scan_ignored(worktree.path, status.ignored)
     if scan.nested_repositories:
         blockers.append(NestedRepositoryBlocker(paths=scan.nested_repositories))
-    if scan.precious_files:
-        blockers.append(PreciousFilesBlocker(files=scan.precious_files))
+    if scan.precious:
+        blockers.append(PreciousFilesBlocker(entries=scan.precious))
     if scan.unreadable:
         blockers.append(UnreadableBlocker(paths=scan.unreadable))
     return tuple(blockers)

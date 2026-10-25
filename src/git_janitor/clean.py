@@ -38,7 +38,7 @@ def clean(
     codes in `accept` are ignored for explicit targets.
     """
     if bool(targets) == all:
-        raise ValueError("Pass either targets or all=True.")
+        raise ValueError("Pass candidate ids to clean, or --all, but not both.")
     accept = frozenset(accept)
     if not_acceptable := accept - ACCEPTABLE_BLOCKERS:
         codes = ", ".join(sorted(not_acceptable))
@@ -108,8 +108,6 @@ def _clean_candidate(
     for action in candidate.actions:
         try:
             _execute(action, repo, cwd, accept)
-        except (git.GitError, ChangedSinceAnalysisError, OSError) as exc:
-            return outcome(Outcome.FAILED, str(exc), done)
         except Exception as exc:  # Keep going, so earlier targets' recovery commands are reported
             return outcome(Outcome.FAILED, f"{type(exc).__name__}: {exc}", done)
         done.append(action)

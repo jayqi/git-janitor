@@ -220,7 +220,7 @@ def test_clean_accepting_precious_files_deletes_worktree(sandbox, global_exclude
     assert outcome.verdict is Verdict.REVIEW
     [accepted] = outcome.accepted
     assert accepted.code is BlockerCode.PRECIOUS_FILES
-    assert [f.path for f in accepted.files] == [".plans/plan.md"]
+    assert [e.path for e in accepted.entries] == [".plans/"]
     assert not path.exists()
 
 
@@ -239,20 +239,6 @@ def test_clean_refuses_blockers_that_were_not_accepted(sandbox, global_excludes)
     assert path.exists()
 
 
-def test_clean_accepting_stashes_keeps_the_stash(sandbox):
-    sandbox.new_branch("feat")
-    sandbox.squash_merge(sandbox.open_pr("feat"))
-    sandbox.git("checkout", "-q", "feat")
-    (sandbox.repo / "file1.txt").write_text("unsaved\n")
-    sandbox.git("stash", "push", "-m", "idea")
-    sandbox.git("checkout", "-q", "main")
-
-    result = clean(sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.STASHES])
-
-    assert result.outcomes[0].outcome is Outcome.DELETED
-    assert "On feat: idea" in sandbox.git("stash", "list")
-
-
 def test_clean_accepting_recent_activity_deletes_fresh_worktree(sandbox):
     path = sandbox.add_worktree("fresh", create=True)
 
@@ -266,4 +252,4 @@ def test_clean_accepting_recent_activity_deletes_fresh_worktree(sandbox):
 
 def test_clean_rejects_accept_with_all(sandbox):
     with pytest.raises(ValueError, match="targets"):
-        clean(sandbox.repo, sandbox.github, all=True, accept=[BlockerCode.STASHES])
+        clean(sandbox.repo, sandbox.github, all=True, accept=[BlockerCode.RECENT_ACTIVITY])

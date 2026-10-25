@@ -48,7 +48,7 @@ These are the reasons the tool exists. Don't weaken them without an explicit dec
 - Only merges into the default branch count.
 - Only `merged` and `no_unique_commits` candidates with no blockers get the `delete` verdict. `no_unique_commits` worktrees stay blocked until inactive for `janitor.minAge`.
 - Pull requests only count if their base repository is origin.
-- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides blockers that `git worktree remove` doesn't check itself, and only for explicit targets.
+- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides `precious_files` and `recent_activity`, and only for explicit targets.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
 - Each deletion re-checks its target immediately beforehand: a worktree's blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
 - Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, a worktree that can't be checked gets an `error` blocker, and a failed ancestry check is an error rather than a "no".

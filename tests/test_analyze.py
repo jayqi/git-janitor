@@ -6,7 +6,6 @@ from git_janitor.model import (
     DeleteBranch,
     ExtraCommits,
     PullRequestEvidence,
-    StashesBlocker,
     Status,
     Verdict,
 )
@@ -168,14 +167,12 @@ def test_unfetchable_pull_request_head_does_not_count_as_match(sandbox):
     assert candidate.verdict is Verdict.REVIEW
 
 
-def test_commit_and_stash_messages_with_unicode_line_separators(sandbox):
+def test_commit_messages_with_unicode_line_separators(sandbox):
     sandbox.new_branch("feat")
     pr = sandbox.open_pr("feat")
     sandbox.squash_merge(pr)
     sandbox.git("checkout", "-q", "feat")
     sandbox.commit(message="Before after")
-    (sandbox.repo / "file1.txt").write_text("unsaved\n")
-    sandbox.git("stash", "push", "-m", "idea more")
     sandbox.git("checkout", "-q", "main")
 
     report = analyze(sandbox.repo, sandbox.github)
@@ -183,8 +180,6 @@ def test_commit_and_stash_messages_with_unicode_line_separators(sandbox):
     candidate = report.candidate("feat")
     [extra] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
     assert [c.subject for c in extra.commits] == ["Before after"]
-    [stashes] = [b for b in candidate.blockers if isinstance(b, StashesBlocker)]
-    assert [s.subject for s in stashes.stashes] == ["On feat: idea\u2028more"]
 
 
 def test_missing_default_branch_ref_is_an_error(sandbox):

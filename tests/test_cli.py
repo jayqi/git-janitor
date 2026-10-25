@@ -152,29 +152,27 @@ def test_report_json_worktree_blockers(in_sandbox, global_excludes):
         {
             "code": "precious_files",
             "detail": "1 precious ignored files",
-            "files": [
-                {"path": ".plans/plan.md", "size": 5, "modified": "2026-01-02T03:04:05+00:00"}
+            "entries": [
+                {
+                    "path": ".plans/",
+                    "files": 1,
+                    "size": 5,
+                    "modified": "2026-01-02T03:04:05+00:00",
+                }
             ],
         },
     ]
 
 
-def test_report_json_main_worktree_and_stash_blockers(in_sandbox):
+def test_report_json_main_worktree_blocker(in_sandbox):
     in_sandbox.new_branch("feat")
     in_sandbox.squash_merge(in_sandbox.open_pr("feat"))
     in_sandbox.git("checkout", "-q", "feat")
-    (in_sandbox.repo / "file1.txt").write_text("unsaved\n")
-    in_sandbox.git("stash", "push", "-m", "idea")
 
     [candidate] = report_json("feat")["candidates"]
 
     assert candidate["blockers"] == [
-        {"code": "is_main", "detail": "checked out in the main worktree"},
-        {
-            "code": "stashes",
-            "detail": "1 stash entries made on this branch",
-            "stashes": [{"ref": "stash@{0}", "subject": "On feat: idea"}],
-        },
+        {"code": "is_main", "detail": "checked out in the main worktree"}
     ]
 
 
@@ -284,7 +282,7 @@ def test_clean_json_failed(in_sandbox, unremovable_worktree):
 
     assert exit_code == 1
     [outcome] = output["outcomes"]
-    assert outcome.pop("detail").startswith("git worktree remove")
+    assert outcome.pop("detail").startswith("GitError: git worktree remove")
     assert outcome == {
         "id": "feat",
         "outcome": "failed",
@@ -490,7 +488,7 @@ def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
     os.utime(plan, (modified.timestamp(), modified.timestamp()))
     tip = in_sandbox.tip("feat")
 
-    exit_code, output = clean_json("--accept", "precious_files, stashes", "feat")
+    exit_code, output = clean_json("--accept", "precious_files, recent_activity", "feat")
 
     assert exit_code == 0
     assert output["outcomes"] == [
@@ -508,9 +506,10 @@ def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
                 {
                     "code": "precious_files",
                     "detail": "1 precious ignored files",
-                    "files": [
+                    "entries": [
                         {
-                            "path": ".plans/plan.md",
+                            "path": ".plans/",
+                            "files": 1,
                             "size": 5,
                             "modified": "2026-01-02T03:04:05+00:00",
                         }

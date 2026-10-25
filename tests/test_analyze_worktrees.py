@@ -60,11 +60,10 @@ def test_ignored_files_from_global_excludes_are_precious(sandbox, global_exclude
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    files = blocker(candidate, PreciousFilesBlocker).files
-    assert [(f.path, f.size) for f in files] == [
-        (".notes.md.swp", 8),
-        (".plans/plan.md", 5),
-        (".plans/sub/notes.md", 7),
+    entries = blocker(candidate, PreciousFilesBlocker).entries
+    assert [(e.path, e.files, e.size) for e in entries] == [
+        (".notes.md.swp", 1, 8),
+        (".plans/", 2, 12),
     ]
 
 
@@ -77,8 +76,8 @@ def test_ignored_files_from_info_exclude_are_precious(sandbox):
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    files = blocker(candidate, PreciousFilesBlocker).files
-    assert [f.path for f in files] == ["scratch.txt"]
+    entries = blocker(candidate, PreciousFilesBlocker).entries
+    assert [e.path for e in entries] == ["scratch.txt"]
 
 
 def test_configured_disposable_patterns_are_not_precious(sandbox, global_excludes):
@@ -92,6 +91,17 @@ def test_configured_disposable_patterns_are_not_precious(sandbox, global_exclude
     candidate = report.candidate("feat")
     assert candidate.blockers == ()
     assert candidate.verdict is Verdict.DELETE
+
+
+def test_python_venv_is_disposable(sandbox):
+    path, _ = sandbox.merged_worktree()
+    (path / ".venv" / "lib").mkdir(parents=True)
+    (path / ".venv" / ".gitignore").write_text("*\n")
+    (path / ".venv" / "lib" / "module.py").write_text("")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
 
 
 def test_worktree_containing_current_directory_needs_review(sandbox):
@@ -127,17 +137,17 @@ def test_detached_worktree_with_new_commits_has_no_pr(sandbox):
     assert report.candidate(str(path)).status is Status.NO_PR
 
 
-def test_linked_worktree_on_default_branch_needs_review(sandbox):
+def test_default_branch_in_linked_worktree_is_kept(sandbox):
     sandbox.new_branch("feat")
     sandbox.git("checkout", "-q", "feat")
-    path = sandbox.add_worktree("main")
+    sandbox.add_worktree("main")
 
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("main")
     assert candidate.status is Status.DEFAULT_BRANCH
-    assert candidate.verdict is Verdict.REVIEW
-    assert candidate.actions == (RemoveWorktree(path=path),)
+    assert candidate.verdict is Verdict.KEEP
+    assert candidate.actions == ()
 
 
 def test_worktree_mid_rebase_stays_with_its_branch(sandbox):
@@ -176,18 +186,18 @@ def commit_gitignore(sandbox, path, content):
     sandbox.git("commit", "-m", "Add .gitignore", cwd=path)
 
 
-def test_repository_nested_in_disposable_directory_needs_review(sandbox):
+def test_repository_in_committed_ignored_directory_is_disposable(sandbox):
     path = sandbox.add_worktree("feat", create=True)
-    commit_gitignore(sandbox, path, "vendor/\n")
+    commit_gitignore(sandbox, path, ".build/\n")
     sandbox.squash_merge(sandbox.open_pr("feat"))
-    nested = path / "vendor" / "lib"
+    nested = path / ".build" / "checkouts" / "dependency"
     sandbox.git("init", "-q", str(nested))
-    (nested / "lib.py").write_text("work\n")
 
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    assert candidate.blockers == (NestedRepositoryBlocker(paths=("vendor/lib",)),)
+    assert candidate.blockers == ()
+    assert candidate.verdict is Verdict.DELETE
 
 
 def test_untracked_gitignore_does_not_make_files_disposable(sandbox):
@@ -199,8 +209,8 @@ def test_untracked_gitignore_does_not_make_files_disposable(sandbox):
     report = analyze(sandbox.repo, sandbox.github)
 
     candidate = report.candidate("feat")
-    files = blocker(candidate, PreciousFilesBlocker).files
-    assert [f.path for f in files] == ["notes/.gitignore", "notes/ideas.md"]
+    entries = blocker(candidate, PreciousFilesBlocker).entries
+    assert [e.path for e in entries] == ["notes/.gitignore", "notes/ideas.md"]
 
 
 def test_locked_worktree_with_missing_directory_needs_review(sandbox):
@@ -241,8 +251,8 @@ def test_cache_directories_are_disposable(sandbox, global_excludes):
 
     report = analyze(sandbox.repo, sandbox.github)
 
-    files = blocker(report.candidate("feat"), PreciousFilesBlocker).files
-    assert [f.path for f in files] == [".plans/plan.md"]
+    entries = blocker(report.candidate("feat"), PreciousFilesBlocker).entries
+    assert [(e.path, e.files) for e in entries] == [(".plans/", 1)]
 
 
 def test_repository_nested_in_precious_directory_is_reported_once(sandbox, global_excludes):
@@ -256,7 +266,8 @@ def test_repository_nested_in_precious_directory_is_reported_once(sandbox, globa
 
     candidate = report.candidate("feat")
     assert candidate.blockers[0] == NestedRepositoryBlocker(paths=(".plans/experiment",))
-    assert [f.path for f in blocker(candidate, PreciousFilesBlocker).files] == [".plans/plan.md"]
+    entries = blocker(candidate, PreciousFilesBlocker).entries
+    assert [(e.path, e.files) for e in entries] == [(".plans/", 1)]
 
 
 def days_from_now(days):

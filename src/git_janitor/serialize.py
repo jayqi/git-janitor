@@ -19,7 +19,6 @@ from git_janitor.model import (
     RecentActivityBlocker,
     RemoveWorktree,
     Report,
-    StashesBlocker,
     TargetOutcome,
     UnreadableBlocker,
     UntrackedBlocker,
@@ -88,16 +87,20 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
             | UnreadableBlocker(paths=paths)
         ):
             result["paths"] = list(paths)
-        case PreciousFilesBlocker(files=files):
-            result["files"] = [
-                {"path": f.path, "size": f.size, "modified": f.modified.isoformat()} for f in files
+        case PreciousFilesBlocker(entries=entries):
+            result["entries"] = [
+                {
+                    "path": e.path,
+                    "files": e.files,
+                    "size": e.size,
+                    "modified": e.modified.isoformat(),
+                }
+                for e in entries
             ]
         case InProgressOpBlocker(operation=operation):
             result["operation"] = operation
         case RecentActivityBlocker(min_age=min_age):
             result["min_age"] = format_duration(min_age)
-        case StashesBlocker(stashes=stashes):
-            result["stashes"] = [{"ref": s.ref, "subject": s.subject} for s in stashes]
     return result
 
 

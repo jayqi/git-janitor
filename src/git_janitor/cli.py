@@ -109,8 +109,6 @@ def clean_command(
     no_fetch: NoFetchOption = False,
 ) -> None:
     """Delete candidates whose verdict is delete. Anything else is refused."""
-    if bool(targets) == all:
-        raise fail("Pass candidate ids to clean, or --all, but not both.")
     try:
         codes = [
             BlockerCode(code.strip())

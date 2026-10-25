@@ -49,19 +49,16 @@ class Commit:
 
 
 @dataclass(frozen=True, slots=True)
-class Stash:
-    ref: str
-    subject: str
-    branch: str | None
-    """The branch the stash was made on, if any."""
+class PreciousEntry:
+    """An ignored file or directory, as `git status` lists it, holding precious files."""
 
-
-@dataclass(frozen=True, slots=True)
-class PreciousFile:
     path: str
-    """Path relative to the worktree root."""
+    """Path relative to the worktree root. A directory's ends in `/`."""
+    files: int
     size: int
+    """Total size of the precious files, in bytes."""
     modified: datetime
+    """When the most recently modified precious file was modified."""
 
 
 class PullRequestState(StrEnum):
@@ -126,7 +123,6 @@ class BlockerCode(StrEnum):
     IN_PROGRESS_OP = "in_progress_op"
     IS_CURRENT = "is_current"
     IS_MAIN = "is_main"
-    STASHES = "stashes"
     NESTED_REPOSITORY = "nested_repository"
     UNREADABLE = "unreadable"
     RECENT_ACTIVITY = "recent_activity"
@@ -156,11 +152,11 @@ class UntrackedBlocker:
 @dataclass(frozen=True, slots=True)
 class PreciousFilesBlocker:
     code: ClassVar[BlockerCode] = BlockerCode.PRECIOUS_FILES
-    files: tuple[PreciousFile, ...]
+    entries: tuple[PreciousEntry, ...]
 
     @property
     def detail(self) -> str:
-        return f"{len(self.files)} precious ignored files"
+        return f"{sum(e.files for e in self.entries)} precious ignored files"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,16 +186,6 @@ class IsCurrentBlocker:
 class IsMainBlocker:
     code: ClassVar[BlockerCode] = BlockerCode.IS_MAIN
     detail: ClassVar[str] = "checked out in the main worktree"
-
-
-@dataclass(frozen=True, slots=True)
-class StashesBlocker:
-    code: ClassVar[BlockerCode] = BlockerCode.STASHES
-    stashes: tuple[Stash, ...]
-
-    @property
-    def detail(self) -> str:
-        return f"{len(self.stashes)} stash entries made on this branch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +236,6 @@ type Blocker = (
     | InProgressOpBlocker
     | IsCurrentBlocker
     | IsMainBlocker
-    | StashesBlocker
     | NestedRepositoryBlocker
     | UnreadableBlocker
     | RecentActivityBlocker
@@ -292,9 +277,7 @@ class Candidate:
 
     def verdict_accepting(self, accepted: Collection[BlockerCode]) -> Verdict:
         """The verdict if blockers with the `accepted` codes are ignored."""
-        if self.status is Status.PR_OPEN:
-            return Verdict.KEEP
-        if self.status is Status.DEFAULT_BRANCH and not self.actions:
+        if self.status in (Status.PR_OPEN, Status.DEFAULT_BRANCH):
             return Verdict.KEEP
         if self.status in DELETABLE_STATUSES and not self.unaccepted_blockers(accepted):
             return Verdict.DELETE
@@ -307,14 +290,10 @@ class Candidate:
 DELETABLE_STATUSES = frozenset({Status.MERGED, Status.NO_UNIQUE_COMMITS})
 """Statuses where deleting loses no commits."""
 
-ACCEPTABLE_BLOCKERS = frozenset(
-    {
-        BlockerCode.PRECIOUS_FILES,
-        BlockerCode.STASHES,
-        BlockerCode.RECENT_ACTIVITY,
-    }
-)
-"""Blockers that `clean` can be told to accept. `git worktree remove` doesn't check these."""
+ACCEPTABLE_BLOCKERS = frozenset({BlockerCode.PRECIOUS_FILES, BlockerCode.RECENT_ACTIVITY})
+"""Blockers that `clean` can be told to accept: precious files, which the blocker lists, and
+recent activity, which only protects worktrees that may be in use.
+"""
 
 
 @dataclass(frozen=True, slots=True)

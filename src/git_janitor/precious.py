@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from git_janitor import git
-from git_janitor.model import PreciousFile
+from git_janitor.model import PreciousEntry
 
 BUILTIN_DISPOSABLE = (
     ".DS_Store",
@@ -16,6 +16,7 @@ BUILTIN_DISPOSABLE = (
     "desktop.ini",
     ".idea",
     ".vscode",
+    ".venv",
     "*~",
 )
 DISPOSABLE_CONFIG_KEY = "janitor.disposable"
@@ -27,9 +28,9 @@ CACHEDIR_TAG_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
 
 @dataclass(frozen=True, slots=True)
 class IgnoredScan:
-    precious_files: tuple[PreciousFile, ...]
+    precious: tuple[PreciousEntry, ...]
     nested_repositories: tuple[str, ...]
-    """Roots of git repositories inside ignored directories."""
+    """Roots of git repositories inside precious ignored directories."""
     unreadable: tuple[str, ...]
 
 
@@ -39,11 +40,10 @@ def scan_ignored(worktree: Path, ignored: Sequence[str]) -> IgnoredScan:
 
     An ignored path is disposable if a committed `.gitignore` matched it, if it's in a cache
     directory, or if its name matches a disposable pattern. Anything else is precious. Git
-    repositories nested in ignored paths that aren't disposable by name or in a cache directory
-    are reported, as are paths that can't be read.
+    repositories inside precious directories are reported, as are paths that can't be read.
     """
     if not ignored:
-        return IgnoredScan(precious_files=(), nested_repositories=(), unreadable=())
+        return IgnoredScan(precious=(), nested_repositories=(), unreadable=())
     patterns = BUILTIN_DISPOSABLE + tuple(
         pattern.rstrip("/") for pattern in git.config_get_all(DISPOSABLE_CONFIG_KEY, worktree)
     )
@@ -55,10 +55,10 @@ def scan_ignored(worktree: Path, ignored: Sequence[str]) -> IgnoredScan:
     scan = _Scan(worktree, patterns)
     for entry in ignored:
         source = sources.get(entry)
-        committed = source is not None and _is_committed_gitignore(source, tracked)
-        scan.add(worktree / entry, list_files=not committed)
+        if source is None or not _is_committed_gitignore(source, tracked):
+            scan.add(entry)
     return IgnoredScan(
-        precious_files=tuple(sorted(scan.files, key=lambda f: f.path)),
+        precious=tuple(sorted(scan.entries, key=lambda e: e.path)),
         nested_repositories=tuple(sorted(scan.repositories)),
         unreadable=tuple(sorted(scan.unreadable)),
     )
@@ -72,12 +72,13 @@ class _Scan:
     def __init__(self, worktree: Path, patterns: tuple[str, ...]) -> None:
         self.worktree = worktree
         self.patterns = patterns
-        self.files: list[PreciousFile] = []
+        self.entries: list[PreciousEntry] = []
         self.repositories: list[str] = []
         self.unreadable: list[str] = []
 
-    def add(self, path: Path, *, list_files: bool) -> None:
-        """Scan an ignored path, listing its files as precious if `list_files`."""
+    def add(self, entry: str) -> None:
+        """Scan an ignored entry, recording it if it holds precious files."""
+        path = self.worktree / entry
         if self._is_disposable(path) or any(
             _is_cache_directory(parent)
             for parent in path.parents
@@ -85,21 +86,31 @@ class _Scan:
         ):
             return
         if path.is_symlink() or not path.is_dir():
-            if list_files:
-                self._add_file(path)
+            files = [path]
+        elif self._enter(path):
+            files = self._walk(path)
+        else:
             return
-        if not self._enter(path):
-            return
+        stats = [stat for file in files if (stat := self._lstat(file))]
+        if stats:
+            self.entries.append(
+                PreciousEntry(
+                    path=entry,
+                    files=len(stats),
+                    size=sum(stat.st_size for stat in stats),
+                    modified=datetime.fromtimestamp(max(stat.st_mtime for stat in stats), tz=UTC),
+                )
+            )
 
+    def _walk(self, directory: Path) -> list[Path]:
         def on_error(error: OSError) -> None:
             self.unreadable.append(self._relative(Path(error.filename)))
 
-        for root, dirs, names in os.walk(path, onerror=on_error):
+        files = []
+        for root, dirs, names in os.walk(directory, onerror=on_error):
             dirs[:] = [d for d in dirs if self._enter(Path(root, d))]
-            if list_files:
-                for name in names:
-                    if not self._is_disposable(Path(root, name)):
-                        self._add_file(Path(root, name))
+            files += [Path(root, n) for n in names if not self._is_disposable(Path(root, n))]
+        return files
 
     def _enter(self, directory: Path) -> bool:
         """Whether to search `directory`. Records it if it's a repository."""
@@ -110,19 +121,12 @@ class _Scan:
             return False
         return True
 
-    def _add_file(self, path: Path) -> None:
+    def _lstat(self, path: Path) -> os.stat_result | None:
         try:
-            stat = path.lstat()
+            return path.lstat()
         except OSError:
             self.unreadable.append(self._relative(path))
-            return
-        self.files.append(
-            PreciousFile(
-                path=self._relative(path),
-                size=stat.st_size,
-                modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-            )
-        )
+            return None
 
     def _is_disposable(self, path: Path) -> bool:
         return any(

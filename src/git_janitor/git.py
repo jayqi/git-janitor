@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 from subprocess import CompletedProcess
 
-from git_janitor.model import Branch, Commit, Stash, Worktree
+from git_janitor.model import Branch, Commit, Worktree
 
 
 class GitError(RuntimeError):
@@ -286,21 +286,3 @@ def operations_in_progress(cwd: Path) -> list[str]:
         if (cwd / path).exists() and operation not in operations:
             operations.append(operation)
     return operations
-
-
-def list_stashes(cwd: Path) -> list[Stash]:
-    output = run_git("stash", "list", "--format=%gd%x00%gs", cwd=cwd)
-    stashes = []
-    for line in _lines(output):
-        ref, subject = line.split("\0", 1)
-        stashes.append(Stash(ref=ref, subject=subject, branch=_stash_branch(subject)))
-    return stashes
-
-
-def _stash_branch(subject: str) -> str | None:
-    """The branch from a "WIP on <branch>: ..." or "On <branch>: ..." stash subject."""
-    for prefix in ("WIP on ", "On "):
-        if subject.startswith(prefix):
-            branch = subject.removeprefix(prefix).split(": ", 1)[0]
-            return None if branch == "(no branch)" else branch
-    return None
