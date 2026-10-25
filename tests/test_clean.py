@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta
-import os
 import shutil
 
 import pytest
@@ -234,25 +233,30 @@ def test_clean_keeps_worktree_that_switched_branches(sandbox, after_analysis):
     assert path.exists()
 
 
-def test_clean_removes_branch_whose_worktree_directory_is_missing(sandbox):
+def test_clean_removes_branch_whose_worktree_directory_is_long_missing(sandbox):
     path = merged_branch_in_worktree(sandbox)
     shutil.rmtree(path)
 
-    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["feat"], now=datetime.now(UTC) + timedelta(days=8)
+    )
 
     assert result.outcomes[0].outcome is Outcome.DELETED
     assert "feat" not in local_branches(sandbox)
     assert "wt-feat" not in sandbox.git("worktree", "list")
 
 
-def test_clean_reports_filesystem_errors_and_continues(sandbox, after_analysis, monkeypatch):
+@pytest.mark.parametrize(
+    "error", [PermissionError(13, "Permission denied"), RuntimeError("Permission denied")]
+)
+def test_clean_reports_errors_and_continues(sandbox, after_analysis, monkeypatch, error):
     first = merged_branch_in_worktree(sandbox, "first")
     merged_branch_in_worktree(sandbox, "second")
     worktree_status = git.worktree_status
 
     def fail_for_first(cwd):
         if cwd == first:
-            raise PermissionError(13, "Permission denied", str(cwd))
+            raise error
         return worktree_status(cwd)
 
     after_analysis(lambda: monkeypatch.setattr(git, "worktree_status", fail_for_first))
@@ -266,15 +270,16 @@ def test_clean_reports_filesystem_errors_and_continues(sandbox, after_analysis, 
     assert "Permission denied" in result.outcomes[0].detail
 
 
-def test_clean_keeps_inactive_worktree_that_became_active(sandbox, after_analysis):
+def test_clean_keeps_inactive_worktree_that_became_active(sandbox, after_analysis, monkeypatch):
     path = sandbox.add_worktree("fresh", create=True)
     later = datetime.now(UTC) + timedelta(days=8)
 
-    def touch_index():
-        os.utime(path / "file1.txt", (1_900_000_000, 1_900_000_000))
-        sandbox.git("update-index", "--refresh", cwd=path)
+    def use_worktree():
+        # Reflog times have one-second resolution, so make the new entry clearly later
+        monkeypatch.setenv("GIT_COMMITTER_DATE", (later - timedelta(days=1)).isoformat())
+        sandbox.git("reset", "-q", "HEAD", cwd=path)
 
-    after_analysis(touch_index)
+    after_analysis(use_worktree)
 
     result = clean(sandbox.repo, sandbox.github, targets=["fresh"], now=later)
 
@@ -301,7 +306,9 @@ def test_clean_accepting_precious_files_deletes_worktree(sandbox, global_exclude
     [outcome] = result.outcomes
     assert outcome.outcome is Outcome.DELETED
     assert outcome.verdict is Verdict.REVIEW
-    assert outcome.accepted == (BlockerCode.PRECIOUS_FILES,)
+    [accepted] = outcome.accepted
+    assert accepted.code is BlockerCode.PRECIOUS_FILES
+    assert [f.path for f in accepted.files] == [".plans/plan.md"]
     assert not path.exists()
 
 
@@ -316,6 +323,7 @@ def test_clean_refuses_blockers_that_were_not_accepted(sandbox, global_excludes)
     [outcome] = result.outcomes
     assert outcome.outcome is Outcome.REFUSED
     assert outcome.detail == "verdict is review, not delete; blockers: untracked"
+    assert outcome.accepted == ()
     assert path.exists()
 
 
@@ -344,7 +352,16 @@ def test_clean_accepting_recent_activity_deletes_fresh_worktree(sandbox):
     assert not path.exists()
 
 
-@pytest.mark.parametrize("code", [BlockerCode.UNTRACKED, BlockerCode.DIRTY, BlockerCode.IS_MAIN])
+@pytest.mark.parametrize(
+    "code",
+    [
+        BlockerCode.UNTRACKED,
+        BlockerCode.DIRTY,
+        BlockerCode.IS_MAIN,
+        BlockerCode.UNREADABLE,
+        BlockerCode.NESTED_REPOSITORY,
+    ],
+)
 def test_clean_rejects_blockers_that_cannot_be_accepted(sandbox, code):
     with pytest.raises(ValueError, match="can't be accepted"):
         clean(sandbox.repo, sandbox.github, targets=["feat"], accept=[code])
@@ -353,3 +370,30 @@ def test_clean_rejects_blockers_that_cannot_be_accepted(sandbox, code):
 def test_clean_rejects_accept_with_all(sandbox):
     with pytest.raises(ValueError, match="targets"):
         clean(sandbox.repo, sandbox.github, all=True, accept=[BlockerCode.STASHES])
+
+
+def test_clean_refuses_accepted_blockers_that_changed_after_analysis(
+    sandbox, global_excludes, after_analysis
+):
+    path = worktree_with_plans(sandbox, global_excludes)
+    after_analysis(lambda: (path / ".plans" / "new-plan.md").write_text("new\n"))
+
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.PRECIOUS_FILES]
+    )
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert "precious_files changed since the analysis" in outcome.detail
+    assert (path / ".plans" / "new-plan.md").exists()
+
+
+def test_clean_accepting_unreferenced_commits(sandbox):
+    sandbox.new_branch("feat")
+    sandbox.git("branch", "-f", "feat", "main")
+
+    result = clean(
+        sandbox.repo, sandbox.github, targets=["feat"], accept=[BlockerCode.UNREFERENCED_COMMITS]
+    )
+
+    assert result.outcomes[0].outcome is Outcome.DELETED

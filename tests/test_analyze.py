@@ -3,11 +3,16 @@ import pytest
 from git_janitor.analysis import analyze
 from git_janitor.git import GitError
 from git_janitor.model import (
+    Commit,
     DeleteBranch,
     ExtraCommits,
+    LiveUpstreamBlocker,
+    PullRequest,
     PullRequestEvidence,
+    PullRequestState,
     StashesBlocker,
     Status,
+    UnreferencedCommitsBlocker,
     Verdict,
 )
 
@@ -298,3 +303,67 @@ def test_branch_fast_forwarded_to_default_branch_has_no_unique_commits(sandbox):
     candidate = report.candidate("feat")
     assert candidate.status is Status.NO_UNIQUE_COMMITS
     assert not any(isinstance(e, ExtraCommits) for e in candidate.evidence)
+
+
+def test_pull_request_head_missing_after_fetch_does_not_count_as_match(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    sandbox.add_commits("feat")
+    sandbox.github.update(pr, head_oid="1" * 40)  # GitHub's data disagrees with refs/pull
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").status is Status.NO_PR
+
+
+def test_branch_reset_to_default_branch_keeps_unreferenced_commits(sandbox):
+    lost = sandbox.new_branch("feat")
+    sandbox.git("branch", "-f", "feat", "main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (
+        UnreferencedCommitsBlocker(commits=(Commit(sha=lost, subject="Commit 2"),)),
+    )
+
+
+def test_open_pull_request_with_same_name_keeps_branch_in_default_branch(sandbox):
+    sandbox.git("branch", "feat", "main")
+    sandbox.github.pull_requests.append(
+        PullRequest(
+            number=1,
+            url="https://github.com/owner/repo/pull/1",
+            state=PullRequestState.OPEN,
+            base="main",
+            head_name="feat",
+            head_oid="f" * 40,
+        )
+    )
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.PR_OPEN
+    assert candidate.verdict is Verdict.KEEP
+
+
+def test_branch_with_live_upstream_needs_review(sandbox):
+    sandbox.git("branch", "develop", "main")
+    sandbox.push("develop")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("develop")
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert candidate.blockers == (LiveUpstreamBlocker(upstream="origin/develop"),)
+
+
+def test_branch_tracking_default_branch_is_deletable(sandbox):
+    sandbox.git("branch", "--track", "scratch", "origin/main")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("scratch").verdict is Verdict.DELETE

@@ -14,6 +14,8 @@ class FakeGitHub:
     default_branch: str = "main"
     name_with_owner: str = "owner/repo"
     pull_requests: list[PullRequest] = field(default_factory=list)
+    associated_commits: dict[int, set[str]] = field(default_factory=dict)
+    """Commits GitHub associates with each pull request: its own commits and its merge commit."""
 
     def fetch(
         self, remote_url: str, head_names: Sequence[str], commits: Sequence[str] = ()
@@ -22,7 +24,12 @@ class FakeGitHub:
             name: [pr for pr in self.pull_requests if pr.head_name == name] for name in head_names
         }
         by_commit = {
-            sha: [pr for pr in self.pull_requests if pr.head_oid == sha] for sha in commits
+            sha: [
+                pr
+                for pr in self.pull_requests
+                if sha in self.associated_commits.get(pr.number, set())
+            ]
+            for sha in commits
         }
         return GitHubData(
             name_with_owner=self.name_with_owner,
@@ -30,6 +37,9 @@ class FakeGitHub:
             pull_requests=by_head,
             pull_requests_by_commit=by_commit,
         )
+
+    def associate(self, number: int, commits: Sequence[str]) -> None:
+        self.associated_commits.setdefault(number, set()).update(commits)
 
     def get(self, number: int) -> PullRequest:
         return next(pr for pr in self.pull_requests if pr.number == number)
@@ -112,6 +122,17 @@ class Sandbox:
     def push(self, branch: str) -> None:
         self.git("push", "-q", "-u", "origin", branch)
 
+    def _associate_pr_commits(self, number: int) -> None:
+        """Associate a pull request's own commits with it, as GitHub does."""
+        pr = self.github.get(number)
+        try:
+            commits = run_git(
+                "rev-list", pr.head_oid, f"^refs/heads/{pr.base}", cwd=self.origin
+            ).split()
+        except subprocess.CalledProcessError:  # The base branch doesn't exist on origin
+            commits = [pr.head_oid]
+        self.github.associate(number, commits)
+
     def open_pr(self, branch: str, base: str = "main") -> int:
         """Push `branch` and open a pull request for it, with `refs/pull/<N>/head` on origin."""
         self.push(branch)
@@ -128,6 +149,7 @@ class Sandbox:
                 head_oid=head_oid,
             )
         )
+        self._associate_pr_commits(number)
         return number
 
     def push_to_pr(self, number: int, branch: str) -> None:
@@ -136,6 +158,7 @@ class Sandbox:
         head_oid = self.tip(branch)
         self.git("update-ref", f"refs/pull/{number}/head", head_oid, cwd=self.origin)
         self.github.update(number, head_oid=head_oid)
+        self._associate_pr_commits(number)
 
     def push_to_pr_from_elsewhere(self, number: int) -> str:
         """Add a commit to a pull request from another clone, so the local repo lacks it."""
@@ -154,6 +177,7 @@ class Sandbox:
         run_git("push", "-q", "origin", pr.head_name, cwd=elsewhere)
         self.git("update-ref", f"refs/pull/{number}/head", head_oid, cwd=self.origin)
         self.github.update(number, head_oid=head_oid)
+        self._associate_pr_commits(number)
         return head_oid
 
     def squash_merge(self, number: int, *, delete_head: bool = True) -> str:
@@ -170,6 +194,7 @@ class Sandbox:
         if delete_head:
             run_git("update-ref", "-d", f"refs/heads/{pr.head_name}", cwd=self.origin)
         self.github.update(number, state=PullRequestState.MERGED)
+        self.github.associate(number, [squash])
         return squash
 
     def merge_commit_merge(self, number: int) -> str:
@@ -193,6 +218,7 @@ class Sandbox:
         run_git("update-ref", base_ref, merge, cwd=self.origin)
         run_git("update-ref", "-d", f"refs/heads/{pr.head_name}", cwd=self.origin)
         self.github.update(number, state=PullRequestState.MERGED)
+        self.github.associate(number, [merge])
         return merge
 
     def close_pr(self, number: int) -> None:

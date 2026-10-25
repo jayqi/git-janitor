@@ -112,7 +112,12 @@ def clean_command(
     if bool(targets) == all:
         raise fail("Pass candidate ids to clean, or --all, but not both.")
     try:
-        codes = [BlockerCode(c) for value in accept or [] for c in value.split(",") if c]
+        codes = [
+            BlockerCode(code.strip())
+            for value in accept or []
+            for code in value.split(",")
+            if code.strip()
+        ]
     except ValueError as exc:
         raise fail(str(exc)) from exc
     repo = repo_root()

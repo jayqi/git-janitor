@@ -46,11 +46,12 @@ These are the reasons the tool exists. Don't weaken them without an explicit dec
 
 - A pull request only counts if the local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch. Matching by branch name alone is never enough.
 - Only merges into the default branch count.
-- Only `merged` and `no_unique_commits` candidates with no blockers get the `delete` verdict. Worktrees with no commits of their own stay blocked until inactive for `janitor.minAge`.
-- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides blockers that `git worktree remove` doesn't check itself, and only for explicit targets.
+- Only `merged` and `no_unique_commits` candidates with no blockers get the `delete` verdict. `no_unique_commits` worktrees and worktrees whose directory is missing stay blocked until inactive for `janitor.minAge`.
+- Pull requests only count if their base repository is origin.
+- `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides blockers that `git worktree remove` doesn't check itself, only for explicit targets, and only if the accepted blockers are unchanged when the worktree is removed.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
 - Each deletion re-checks its target immediately beforehand: a worktree's HEAD commit, branch, activity, and blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
-- Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, and a failed ancestry check is an error rather than a "no".
+- Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, a worktree that can't be checked gets an `error` blocker, and a failed ancestry check is an error rather than a "no".
 - Nothing on the remote is ever modified.
 
 ## Testing

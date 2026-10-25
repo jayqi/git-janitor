@@ -16,8 +16,6 @@ BUILTIN_DISPOSABLE = (
     "desktop.ini",
     ".idea",
     ".vscode",
-    "*.swp",
-    "*.swo",
     "*~",
 )
 DISPOSABLE_CONFIG_KEY = "janitor.disposable"
@@ -79,15 +77,19 @@ class _Scan:
         self.unreadable: list[str] = []
 
     def add(self, path: Path, *, list_files: bool) -> None:
-        """Scan an ignored path, listing its files as precious if `list_files`."""
-        if self._is_disposable(path) or any(
+        """Scan an ignored path, listing its files as precious if `list_files`.
+
+        Disposable-named files aren't listed, but disposable-named directories are still
+        searched for repositories. Cache directories aren't searched at all.
+        """
+        if any(
             _is_cache_directory(parent)
             for parent in path.parents
             if parent.is_relative_to(self.worktree)
         ):
             return
         if path.is_symlink() or not path.is_dir():
-            if list_files:
+            if list_files and not self._is_disposable(path):
                 self._add_file(path)
             return
         if not self._enter(path):
@@ -105,7 +107,7 @@ class _Scan:
 
     def _enter(self, directory: Path) -> bool:
         """Whether to search `directory`. Records it if it's a repository."""
-        if directory in self.skip or self._is_disposable(directory):
+        if directory in self.skip:
             return False
         if _is_cache_directory(directory):
             return False

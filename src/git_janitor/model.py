@@ -34,6 +34,8 @@ class Worktree:
     is_main: bool
     locked: bool
     prunable: bool
+    admin_dir: Path | None = None
+    """Git's administrative directory for a linked worktree, `.git/worktrees/<id>`."""
 
     @property
     def detached(self) -> bool:
@@ -133,6 +135,9 @@ class BlockerCode(StrEnum):
     NESTED_REPOSITORY = "nested_repository"
     UNREADABLE = "unreadable"
     RECENT_ACTIVITY = "recent_activity"
+    UNREFERENCED_COMMITS = "unreferenced_commits"
+    LIVE_UPSTREAM = "live_upstream"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +289,35 @@ class RecentActivityBlocker:
         return f"active within the last {format_duration(self.min_age)} (janitor.minAge)"
 
 
+@dataclass(frozen=True, slots=True)
+class UnreferencedCommitsBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.UNREFERENCED_COMMITS
+    commits: tuple[Commit, ...]
+    """Commits in the branch's or worktree's reflogs that no branch, tag, or remote branch has."""
+
+    @property
+    def detail(self) -> str:
+        return f"{len(self.commits)} commits only in reflogs that deleting would discard"
+
+
+@dataclass(frozen=True, slots=True)
+class LiveUpstreamBlocker:
+    code: ClassVar[BlockerCode] = BlockerCode.LIVE_UPSTREAM
+    upstream: str
+
+    @property
+    def detail(self) -> str:
+        return f"tracks {self.upstream}, which still exists"
+
+
+@dataclass(frozen=True, slots=True)
+class ErrorBlocker:
+    """Checking the worktree failed, so whether anything would be lost is unknown."""
+
+    code: ClassVar[BlockerCode] = BlockerCode.ERROR
+    detail: str
+
+
 type Blocker = (
     DirtyBlocker
     | UntrackedBlocker
@@ -301,6 +335,9 @@ type Blocker = (
     | NestedRepositoryBlocker
     | UnreadableBlocker
     | RecentActivityBlocker
+    | UnreferencedCommitsBlocker
+    | LiveUpstreamBlocker
+    | ErrorBlocker
 )
 
 
@@ -356,10 +393,10 @@ DELETABLE_STATUSES = frozenset({Status.MERGED, Status.NO_UNIQUE_COMMITS})
 ACCEPTABLE_BLOCKERS = frozenset(
     {
         BlockerCode.PRECIOUS_FILES,
-        BlockerCode.NESTED_REPOSITORY,
-        BlockerCode.UNREADABLE,
         BlockerCode.STASHES,
         BlockerCode.RECENT_ACTIVITY,
+        BlockerCode.UNREFERENCED_COMMITS,
+        BlockerCode.LIVE_UPSTREAM,
     }
 )
 """Blockers that `clean` can be told to accept. `git worktree remove` doesn't check these."""
@@ -411,8 +448,8 @@ class TargetOutcome:
     """The candidate's planned actions."""
     recovery: tuple[str, ...] = ()
     """Commands that restore what the completed actions made unreachable."""
-    accepted: tuple[BlockerCode, ...] = ()
-    """The candidate's blockers that were accepted."""
+    accepted: tuple[Blocker, ...] = ()
+    """The candidate's blockers that were accepted, for targets that weren't refused."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -86,21 +86,46 @@ def reflog_time(ref: str, cwd: Path) -> datetime | None:
     return datetime.fromtimestamp(int(selector.rsplit("@{", 1)[1][:-1]), tz=UTC)
 
 
-def worktree_activity(worktree: Path) -> datetime | None:
-    """When a linked worktree last changed, from its HEAD reflog, index, and admin directory."""
-    if not worktree.is_dir():
+def worktree_activity(worktree: Worktree, repo: Path) -> datetime | None:
+    """When a linked worktree was created or its HEAD last moved.
+
+    Read from the worktree's admin directory, so it works when the worktree's directory is
+    missing. Other files there, like the index, are rewritten by ordinary commands such as
+    `git status`.
+    """
+    if worktree.admin_dir is None:
         return None
-    result = _git(["rev-parse", "--git-dir", "--git-path", "index"], worktree)
-    if result.returncode != 0:
-        return None
-    git_dir, index = _lines(result.stdout)
-    times = [reflog_time("HEAD", cwd=worktree)]
-    for path in (worktree / git_dir, worktree / index):
-        try:
-            times.append(datetime.fromtimestamp(path.stat().st_mtime, tz=UTC))
-        except OSError:
-            pass
+    times = [reflog_time(f"worktrees/{worktree.admin_dir.name}/HEAD", cwd=repo)]
+    try:
+        created = (worktree.admin_dir / "commondir").stat().st_mtime
+        times.append(datetime.fromtimestamp(created, tz=UTC))
+    except OSError:
+        pass
     return max((t for t in times if t is not None), default=None)
+
+
+def reflog_commits(ref: str, cwd: Path) -> list[str]:
+    """Commits in `ref`'s reflog, if it has one."""
+    result = _git(["log", "-g", "--format=%H", ref, "--"], cwd)
+    return _lines(result.stdout) if result.returncode == 0 else []
+
+
+def unreferenced_commits(revs: Sequence[str], cwd: Path) -> list[Commit]:
+    """Commits reachable from `revs` but from no ref, oldest first."""
+    if not revs:
+        return []
+    output = run_git(
+        "log",
+        "--ignore-missing",
+        "--reverse",
+        "--format=%H%x00%s",
+        *revs,
+        "--not",
+        "--all",
+        "--",
+        cwd=cwd,
+    )
+    return [Commit(*line.split("\0", 1)) for line in _lines(output)]
 
 
 def ref_exists(ref: str, cwd: Path) -> bool:
@@ -133,6 +158,7 @@ def fetch(remote: str, cwd: Path) -> None:
 
 def list_worktrees(cwd: Path) -> list[Worktree]:
     output = run_git("worktree", "list", "--porcelain", "-z", cwd=cwd)
+    admin_dirs = _worktree_admin_dirs(cwd)
     worktrees = []
     for record in output.split("\0\0"):
         if not record.strip("\0"):
@@ -155,9 +181,23 @@ def list_worktrees(cwd: Path) -> list[Worktree]:
                 is_main=not worktrees,
                 locked="locked" in fields,
                 prunable="prunable" in fields,
+                admin_dir=admin_dirs.get(path.resolve()),
             )
         )
     return worktrees
+
+
+def _worktree_admin_dirs(cwd: Path) -> dict[Path, Path]:
+    """Map linked worktree paths to their admin directories."""
+    common_dir = cwd / run_git("rev-parse", "--git-common-dir", cwd=cwd).strip()
+    admin_dirs = {}
+    for admin_dir in (common_dir / "worktrees").glob("*/"):
+        try:
+            dot_git = Path((admin_dir / "gitdir").read_text().strip())
+        except OSError:
+            continue
+        admin_dirs[dot_git.parent.resolve()] = admin_dir.resolve()
+    return admin_dirs
 
 
 def _in_progress_branch(worktree: Path) -> str | None:

@@ -14,18 +14,22 @@ from git_janitor.model import (
     ExtraCommits,
     HiddenChangesBlocker,
     InProgressOpBlocker,
+    LiveUpstreamBlocker,
     MultipleWorktreesBlocker,
     NestedRepositoryBlocker,
     NestedWorktreeBlocker,
     PreciousFilesBlocker,
     PullRequestEvidence,
+    RecentActivityBlocker,
     RemoveWorktree,
     Report,
     StashesBlocker,
     SubmodulesBlocker,
     TargetOutcome,
     UnreadableBlocker,
+    UnreferencedCommitsBlocker,
     UntrackedBlocker,
+    format_duration,
 )
 
 SCHEMA_VERSION = 1
@@ -100,6 +104,12 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
             ]
         case InProgressOpBlocker(operation=operation):
             result["operation"] = operation
+        case UnreferencedCommitsBlocker(commits=commits):
+            result["commits"] = [{"sha": c.sha, "subject": c.subject} for c in commits]
+        case LiveUpstreamBlocker(upstream=upstream):
+            result["upstream"] = upstream
+        case RecentActivityBlocker(min_age=min_age):
+            result["min_age"] = format_duration(min_age)
         case StashesBlocker(stashes=stashes):
             result["stashes"] = [{"ref": s.ref, "subject": s.subject} for s in stashes]
     return result
@@ -141,5 +151,5 @@ def outcome_to_dict(outcome: TargetOutcome) -> dict[str, Any]:
         "detail": outcome.detail,
         "actions": [action_to_dict(a) for a in outcome.actions],
         "recovery": list(outcome.recovery),
-        "accepted": [str(code) for code in outcome.accepted],
+        "accepted": [blocker_to_dict(b) for b in outcome.accepted],
     }

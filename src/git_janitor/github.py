@@ -32,7 +32,9 @@ class GitHubClient(Protocol):
 
 PULL_REQUESTS_PER_HEAD = 20
 
-PULL_REQUEST_FIELDS = "number url state baseRefName headRefName headRefOid"
+PULL_REQUEST_FIELDS = (
+    "number url state baseRefName headRefName headRefOid baseRepository { nameWithOwner }"
+)
 
 
 def run_gh(args: Sequence[str]) -> str:
@@ -65,15 +67,16 @@ class GhGitHubClient:
         for batch in batches:
             repository = self._query(host, owner, name, batch)
             try:
+                name_with_owner = repository["nameWithOwner"]
+                default_branch_ref = repository["defaultBranchRef"]
                 for i, (kind, value) in enumerate(batch):
                     if kind == "head":
-                        by_head[value] = _pull_requests(repository[f"pr{i}"]["nodes"])
+                        nodes = repository[f"pr{i}"]["nodes"]
+                        by_head[value] = _pull_requests(nodes, name_with_owner)
                     else:
                         commit = repository[f"c{i}"]
                         nodes = commit["associatedPullRequests"]["nodes"] if commit else []
-                        by_commit[value] = _pull_requests(nodes)
-                name_with_owner = repository["nameWithOwner"]
-                default_branch_ref = repository["defaultBranchRef"]
+                        by_commit[value] = _pull_requests(nodes, name_with_owner)
             except (KeyError, TypeError, ValueError) as exc:
                 raise GitHubError(f"Unexpected response from GitHub: {exc!r}") from exc
         if not default_branch_ref:
@@ -141,7 +144,12 @@ def parse_remote_url(url: str) -> tuple[str, str, str]:
     return host, parts[0], parts[1]
 
 
-def _pull_requests(nodes: list[dict]) -> list[PullRequest]:
+def _pull_requests(nodes: list[dict], name_with_owner: str) -> list[PullRequest]:
+    """Parse pull request nodes, keeping only those into the repository `name_with_owner`.
+
+    A commit's associated pull requests can include ones in other repositories of its fork
+    network.
+    """
     return [
         PullRequest(
             number=node["number"],
@@ -152,4 +160,5 @@ def _pull_requests(nodes: list[dict]) -> list[PullRequest]:
             head_oid=node["headRefOid"],
         )
         for node in nodes
+        if node["baseRepository"]["nameWithOwner"].lower() == name_with_owner.lower()
     ]

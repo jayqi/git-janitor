@@ -37,14 +37,15 @@ class FakeGh:
         return dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
 
 
-def pr_node(number, head, state="MERGED", base="main", oid="abc123"):
+def pr_node(number, head, state="MERGED", base="main", oid="abc123", repo="owner/repo"):
     return {
         "number": number,
-        "url": f"https://github.com/owner/repo/pull/{number}",
+        "url": f"https://github.com/{repo}/pull/{number}",
         "state": state,
         "baseRefName": base,
         "headRefName": head,
         "headRefOid": oid,
+        "baseRepository": {"nameWithOwner": repo},
     }
 
 
@@ -184,3 +185,15 @@ def test_fetch_looks_up_pull_requests_by_commit():
         ],
         "bbb222": [],
     }
+
+
+def test_pull_requests_into_other_repositories_are_ignored():
+    fork_pr = pr_node(7, "feat", oid="aaa111", repo="upstream/repo")
+    gh = FakeGh(prs_by_head={"feat": [fork_pr]}, prs_by_commit={"aaa111": [fork_pr]})
+
+    data = GhGitHubClient(run_gh=gh).fetch(
+        "git@github.com:owner/repo.git", ["feat"], commits=["aaa111"]
+    )
+
+    assert data.pull_requests == {"feat": []}
+    assert data.pull_requests_by_commit == {"aaa111": []}

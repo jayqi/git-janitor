@@ -10,6 +10,7 @@ from git_janitor.model import (
     BrokenWorktreeBlocker,
     DeleteBranch,
     DirtyBlocker,
+    ErrorBlocker,
     HiddenChangesBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
@@ -26,6 +27,7 @@ from git_janitor.model import (
     Status,
     SubmodulesBlocker,
     UnreadableBlocker,
+    UnreferencedCommitsBlocker,
     UntrackedBlocker,
     Verdict,
 )
@@ -218,11 +220,11 @@ def test_detached_worktree_with_new_commits_has_no_pr(sandbox):
     assert report.candidate(str(path)).status is Status.NO_PR
 
 
-def test_merged_branch_in_missing_worktree_is_deletable(sandbox):
+def test_merged_branch_in_long_missing_worktree_is_deletable(sandbox):
     path = merged_branch_in_worktree(sandbox)
     shutil.rmtree(path)
 
-    report = analyze(sandbox.repo, sandbox.github)
+    report = analyze(sandbox.repo, sandbox.github, now=days_from_now(8))
 
     candidate = report.candidate("feat")
     assert candidate.worktree.prunable
@@ -358,7 +360,10 @@ def test_locked_worktree_with_missing_directory_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert candidate.blockers == (LockedBlocker(),)
+    assert candidate.blockers == (
+        LockedBlocker(),
+        RecentActivityBlocker(min_age=timedelta(days=7)),
+    )
 
 
 def test_broken_symlink_in_precious_directory_is_reported(sandbox, global_excludes):
@@ -635,3 +640,139 @@ def test_detached_worktree_at_open_pull_request_head_is_kept(sandbox):
     report = analyze(sandbox.repo, sandbox.github)
 
     assert report.candidate(str(path)).status is Status.PR_OPEN
+
+
+def test_detached_worktree_at_intermediate_pull_request_commit_is_merged(sandbox):
+    sandbox.new_branch("feat", commits=2)
+    pr = sandbox.open_pr("feat")
+    first = sandbox.tip("feat~1")
+    sandbox.git("branch", "-D", "feat")
+    path = sandbox.add_detached_worktree("review", commit=first)
+    sandbox.squash_merge(pr)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate(str(path)).status is Status.MERGED
+
+
+def test_detached_worktree_at_squash_commit_has_no_unique_commits(sandbox):
+    sandbox.new_branch("feat")
+    pr = sandbox.open_pr("feat")
+    squash = sandbox.squash_merge(pr)
+    sandbox.git("fetch", "-q", "origin")
+    path = sandbox.add_detached_worktree("main-copy", commit=squash)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate(str(path))
+    assert candidate.status is Status.NO_UNIQUE_COMMITS
+    assert candidate.evidence == (
+        PullRequestEvidence(pull_request=sandbox.github.get(pr), matched=False),
+    )
+
+
+def old_worktree(sandbox, monkeypatch, name="fresh"):
+    """A worktree with no commits of its own, created and last committed to in 2020."""
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+    path = sandbox.add_worktree(name, create=True)
+    monkeypatch.delenv("GIT_COMMITTER_DATE")
+    commondir = sandbox.repo / ".git" / "worktrees" / path.name / "commondir"
+    os.utime(commondir, (1_577_836_800, 1_577_836_800))
+    return path
+
+
+def test_git_status_does_not_count_as_activity(sandbox, monkeypatch):
+    path = old_worktree(sandbox, monkeypatch)
+    os.utime(path / "file1.txt", (1_900_000_000, 1_900_000_000))
+    sandbox.git("status", cwd=path)  # Refreshes and rewrites the index
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("fresh")
+    assert candidate.last_activity == datetime(2020, 1, 1, tzinfo=UTC)
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_recently_moved_worktree_needs_review(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    path.rename(sandbox.root / "moved")
+
+    recent = analyze(sandbox.repo, sandbox.github).candidate("feat")
+    inactive = analyze(sandbox.repo, sandbox.github, now=days_from_now(8)).candidate("feat")
+
+    assert recent.blockers == (RecentActivityBlocker(min_age=timedelta(days=7)),)
+    assert inactive.verdict is Verdict.DELETE
+
+
+def test_detached_worktree_with_missing_directory_is_deletable_once_inactive(sandbox):
+    path = sandbox.add_detached_worktree("scratch")
+    shutil.rmtree(path)
+
+    report = analyze(sandbox.repo, sandbox.github, now=days_from_now(8))
+
+    candidate = report.candidate(str(path))
+    assert candidate.last_activity is not None
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_worktree_reset_to_default_branch_keeps_unreferenced_commits(sandbox):
+    path = sandbox.add_worktree("feat", create=True)
+    lost = sandbox.commit(cwd=path)
+    sandbox.git("reset", "-q", "--hard", "main", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github, now=days_from_now(8))
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    [unreferenced] = [b for b in candidate.blockers if isinstance(b, UnreferencedCommitsBlocker)]
+    assert [c.sha for c in unreferenced.commits] == [lost]
+
+
+def test_detached_worktree_that_moved_off_its_commits_keeps_them(sandbox):
+    path = sandbox.add_detached_worktree("scratch")
+    lost = sandbox.commit(cwd=path)
+    sandbox.git("checkout", "-q", "--detach", "main", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github, now=days_from_now(8))
+
+    candidate = report.candidate(str(path))
+    assert candidate.verdict is Verdict.REVIEW
+    [unreferenced] = [b for b in candidate.blockers if isinstance(b, UnreferencedCommitsBlocker)]
+    assert [c.sha for c in unreferenced.commits] == [lost]
+
+
+def test_repositories_in_disposable_named_directories_need_review(sandbox, global_excludes):
+    global_excludes.write_text("vendor/\n.idea/\n")
+    sandbox.git("config", "--add", "janitor.disposable", "vendor")
+    path = merged_branch_in_worktree(sandbox)
+    for nested in (path / "vendor" / "lib", path / ".idea" / "plugin"):
+        sandbox.git("init", "-q", str(nested))
+    (path / "vendor" / "notes.txt").write_text("disposable\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.blockers == (NestedRepositoryBlocker(paths=(".idea/plugin", "vendor/lib")),)
+
+
+def test_editor_swap_files_are_precious(sandbox, global_excludes):
+    global_excludes.write_text("*.swp\n")
+    path = merged_branch_in_worktree(sandbox)
+    (path / ".notes.md.swp").write_text("unsaved\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    files = blocker(report.candidate("feat"), PreciousFilesBlocker).files
+    assert [f.path for f in files] == [".notes.md.swp"]
+
+
+def test_worktree_git_cannot_read_gets_error_blocker(sandbox):
+    path = merged_branch_in_worktree(sandbox)
+    (sandbox.repo / ".git" / "worktrees" / path.name / "index").write_text("not an index")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    [error] = report.candidate("feat").blockers
+    assert isinstance(error, ErrorBlocker)
+    assert "index" in error.detail
+    assert report.candidate("main").verdict is Verdict.KEEP

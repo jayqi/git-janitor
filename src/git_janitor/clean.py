@@ -82,7 +82,7 @@ def _clean_candidate(
     *,
     dry_run: bool,
 ) -> TargetOutcome:
-    accepted = tuple(dict.fromkeys(b.code for b in candidate.blockers if b.code in accept))
+    accepted = tuple(b for b in candidate.blockers if b.code in accept)
 
     def outcome(outcome: Outcome, detail: str = "", done: Sequence[Action] = ()) -> TargetOutcome:
         return TargetOutcome(
@@ -92,7 +92,7 @@ def _clean_candidate(
             detail=detail,
             actions=candidate.actions,
             recovery=_recovery(done),
-            accepted=accepted,
+            accepted=accepted if outcome is not Outcome.REFUSED else (),
         )
 
     verdict = candidate.verdict_accepting(accept)
@@ -110,6 +110,8 @@ def _clean_candidate(
             _execute(action, candidate, repo, cwd, accept)
         except (git.GitError, ChangedSinceAnalysisError, OSError) as exc:
             return outcome(Outcome.FAILED, str(exc), done)
+        except Exception as exc:  # Keep going, so earlier targets' recovery commands are reported
+            return outcome(Outcome.FAILED, f"{type(exc).__name__}: {exc}", done)
         done.append(action)
     return outcome(Outcome.DELETED, done=done)
 
@@ -132,17 +134,20 @@ def _execute(
                 candidate.worktree.branch,
             ):
                 raise ChangedSinceAnalysisError(f"HEAD of {path} changed since the analysis")
-            activity = git.worktree_activity(path)
+            activity = git.worktree_activity(current, repo)
             if activity and (
                 candidate.last_activity is None or activity > candidate.last_activity
             ):
                 raise ChangedSinceAnalysisError(f"{path} changed since the analysis")
-            blockers = [
-                b for b in worktree_blockers(current, worktrees, cwd) if b.code not in accept
-            ]
-            if blockers:
-                codes = ", ".join(str(b.code) for b in blockers)
-                raise ChangedSinceAnalysisError(f"{path} has new blockers: {codes}")
+            blockers = worktree_blockers(current, worktrees, cwd)
+            if unaccepted := [b for b in blockers if b.code not in accept]:
+                found = "; ".join(f"{b.code} ({b.detail})" for b in unaccepted)
+                raise ChangedSinceAnalysisError(f"{path} has new blockers: {found}")
+            for blocker in blockers:
+                if blocker not in candidate.blockers:
+                    raise ChangedSinceAnalysisError(
+                        f"{path}: {blocker.code} changed since the analysis"
+                    )
             git.run_git("worktree", "remove", str(path), cwd=repo)
         case DeleteBranch(name=name, tip=tip):
             if any(wt.branch == name for wt in worktrees):

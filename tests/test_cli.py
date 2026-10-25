@@ -126,7 +126,11 @@ def test_report_json_detached_worktree(in_sandbox):
             "prunable": False,
         },
         "blockers": [
-            {"code": "recent_activity", "detail": "active within the last 7d (janitor.minAge)"}
+            {
+                "code": "recent_activity",
+                "detail": "active within the last 7d (janitor.minAge)",
+                "min_age": "7d",
+            }
         ],
         "evidence": [],
         "actions": [{"kind": "remove_worktree", "path": str(path)}],
@@ -391,7 +395,7 @@ def test_report_json_missing_worktree(in_sandbox):
 
     [candidate] = report_json("feat")["candidates"]
 
-    assert candidate["verdict"] == "delete"
+    assert candidate["verdict"] == "review"
     assert candidate["worktree"] == {
         "path": str(path),
         "head": in_sandbox.tip("feat"),
@@ -400,7 +404,13 @@ def test_report_json_missing_worktree(in_sandbox):
         "locked": False,
         "prunable": True,
     }
-    assert candidate["blockers"] == []
+    assert candidate["blockers"] == [
+        {
+            "code": "recent_activity",
+            "detail": "active within the last 7d (janitor.minAge)",
+            "min_age": "7d",
+        }
+    ]
 
 
 def test_report_json_nested_and_multiple_worktree_blockers(in_sandbox):
@@ -466,7 +476,7 @@ def test_clean_json_deleted(in_sandbox):
     ]
 
 
-def test_filesystem_errors_fail_cleanly(in_sandbox, monkeypatch):
+def test_report_json_error_blocker(in_sandbox, monkeypatch):
     merged_branch_in_worktree(in_sandbox)
 
     def fail(cwd):
@@ -474,10 +484,15 @@ def test_filesystem_errors_fail_cleanly(in_sandbox, monkeypatch):
 
     monkeypatch.setattr(git, "worktree_status", fail)
 
-    result = runner.invoke(cli.app, ["report", "--no-fetch"])
+    [candidate] = report_json("feat")["candidates"]
 
-    assert result.exit_code == 1
-    assert "Permission denied" in result.stderr
+    assert candidate["verdict"] == "review"
+    assert candidate["blockers"] == [
+        {
+            "code": "error",
+            "detail": f"[Errno 13] Permission denied: '{candidate['worktree']['path']}'",
+        }
+    ]
 
 
 def test_report_table_shows_paths_with_markup_characters(in_sandbox, monkeypatch):
@@ -601,13 +616,64 @@ def test_clean_json_accepted_blockers(in_sandbox, global_excludes):
     (path / ".plans").mkdir()
     (path / ".plans" / "plan.md").write_text("plan\n")
 
-    exit_code, output = clean_json("--accept", "precious_files,stashes", "feat")
+    plan = path / ".plans" / "plan.md"
+    modified = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    os.utime(plan, (modified.timestamp(), modified.timestamp()))
+    tip = in_sandbox.tip("feat")
+
+    exit_code, output = clean_json("--accept", "precious_files, stashes", "feat")
 
     assert exit_code == 0
-    [outcome] = output["outcomes"]
-    assert outcome["outcome"] == "deleted"
-    assert outcome["verdict"] == "review"
-    assert outcome["accepted"] == ["precious_files"]
+    assert output["outcomes"] == [
+        {
+            "id": "feat",
+            "outcome": "deleted",
+            "verdict": "review",
+            "detail": "",
+            "actions": [
+                {"kind": "remove_worktree", "path": str(path)},
+                {"kind": "delete_branch", "name": "feat", "tip": tip},
+            ],
+            "recovery": [f"git branch feat {tip}"],
+            "accepted": [
+                {
+                    "code": "precious_files",
+                    "detail": "1 precious ignored files",
+                    "files": [
+                        {
+                            "path": ".plans/plan.md",
+                            "size": 5,
+                            "modified": "2026-01-02T03:04:05+00:00",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+
+def test_clean_json_refused_with_blockers(in_sandbox):
+    path, _ = merged_branch_in_worktree(in_sandbox)
+    (path / "notes.txt").write_text("notes\n")
+    tip = in_sandbox.tip("feat")
+
+    exit_code, output = clean_json("feat")
+
+    assert exit_code == 1
+    assert output["outcomes"] == [
+        {
+            "id": "feat",
+            "outcome": "refused",
+            "verdict": "review",
+            "detail": "verdict is review, not delete; blockers: untracked",
+            "actions": [
+                {"kind": "remove_worktree", "path": str(path)},
+                {"kind": "delete_branch", "name": "feat", "tip": tip},
+            ],
+            "recovery": [],
+            "accepted": [],
+        }
+    ]
 
 
 def test_clean_accept_rejects_other_blockers(in_sandbox):
@@ -622,3 +688,34 @@ def test_clean_accept_rejects_unknown_blockers(in_sandbox):
 
     assert result.exit_code == 1
     assert "nonsense" in result.stderr
+
+
+def test_report_json_unreferenced_commits_and_live_upstream_blockers(in_sandbox):
+    in_sandbox.git("branch", "develop", "main")
+    in_sandbox.push("develop")
+    in_sandbox.add_commits("develop")
+    lost = in_sandbox.tip("develop")
+    in_sandbox.git("branch", "-f", "develop", "main")
+
+    [candidate] = report_json("develop")["candidates"]
+
+    assert candidate["blockers"] == [
+        {
+            "code": "unreferenced_commits",
+            "detail": "1 commits only in reflogs that deleting would discard",
+            "commits": [{"sha": lost, "subject": "Commit 2"}],
+        },
+        {
+            "code": "live_upstream",
+            "detail": "tracks origin/develop, which still exists",
+            "upstream": "origin/develop",
+        },
+    ]
+
+
+def test_report_json_without_recorded_activity(in_sandbox):
+    in_sandbox.git("-c", "core.logAllRefUpdates=false", "branch", "scratch", "main")
+
+    [candidate] = report_json("scratch")["candidates"]
+
+    assert candidate["last_activity"] is None

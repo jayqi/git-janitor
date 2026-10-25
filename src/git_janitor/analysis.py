@@ -11,12 +11,14 @@ from git_janitor.model import (
     Candidate,
     DeleteBranch,
     DirtyBlocker,
+    ErrorBlocker,
     Evidence,
     ExtraCommits,
     HiddenChangesBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
     IsMainBlocker,
+    LiveUpstreamBlocker,
     LockedBlocker,
     MultipleWorktreesBlocker,
     NestedRepositoryBlocker,
@@ -33,6 +35,7 @@ from git_janitor.model import (
     Status,
     SubmodulesBlocker,
     UnreadableBlocker,
+    UnreferencedCommitsBlocker,
     UntrackedBlocker,
     Worktree,
     parse_duration,
@@ -99,13 +102,21 @@ def analyze(
         if len(branch_worktrees) > 1:
             paths = tuple(str(wt.path) for wt in branch_worktrees)
             blockers = (*blockers, MultipleWorktreesBlocker(paths=paths))
+        if status is Status.NO_UNIQUE_COMMITS:
+            blockers = (
+                *blockers,
+                *_no_unique_commits_blockers(branch, worktree, default_branch, repo),
+            )
         linked = worktree if worktree and not worktree.is_main else None
         last_activity = _latest(
             git.reflog_time(f"refs/heads/{branch.name}", cwd=repo),
-            git.worktree_activity(linked.path) if linked else None,
+            git.worktree_activity(linked, repo) if linked else None,
         )
         if linked:
-            blockers = (*blockers, *_recent_activity(status, last_activity, now, min_age))
+            blockers = (
+                *blockers,
+                *_recent_activity(status, linked, last_activity, now, min_age),
+            )
         candidates.append(
             Candidate(
                 id=branch.name,
@@ -128,7 +139,7 @@ def analyze(
             status, evidence = _classify_tip(worktree.head, prs, default_ref, default_branch, repo)
         else:
             status, evidence = Status.BRANCH_MISSING, ()
-        last_activity = git.worktree_activity(worktree.path)
+        last_activity = git.worktree_activity(worktree, repo)
         candidates.append(
             Candidate(
                 id=str(worktree.path),
@@ -137,7 +148,12 @@ def analyze(
                 worktree=worktree,
                 blockers=(
                     *worktree_blockers(worktree, worktrees, cwd),
-                    *_recent_activity(status, last_activity, now, min_age),
+                    *(
+                        _no_unique_commits_blockers(None, worktree, default_branch, repo)
+                        if status is Status.NO_UNIQUE_COMMITS
+                        else ()
+                    ),
+                    *_recent_activity(status, worktree, last_activity, now, min_age),
                 ),
                 evidence=evidence,
                 actions=(RemoveWorktree(path=worktree.path),),
@@ -168,13 +184,43 @@ def _latest(*times: datetime | None) -> datetime | None:
     return max((t for t in times if t is not None), default=None)
 
 
-def _recent_activity(
-    status: Status, last_activity: datetime | None, now: datetime, min_age: timedelta
+def _no_unique_commits_blockers(
+    branch: Branch | None, worktree: Worktree | None, default_branch: str, repo: Path
 ) -> tuple[Blocker, ...]:
-    """Protects worktrees with no commits of their own that may be in use, such as one an agent
-    has just created. Worktrees with other statuses have work to lose and are blocked otherwise.
+    """Things a candidate with no commits of its own could still lose: commits that only its
+    reflogs remember, and the branch it tracks on origin.
     """
-    if status is not Status.NO_UNIQUE_COMMITS:
+    revs = []
+    if branch:
+        revs += git.reflog_commits(f"refs/heads/{branch.name}", cwd=repo)
+    if worktree and worktree.admin_dir:
+        revs += git.reflog_commits(f"worktrees/{worktree.admin_dir.name}/HEAD", cwd=repo)
+    blockers: list[Blocker] = []
+    if commits := git.unreferenced_commits(list(dict.fromkeys(revs)), cwd=repo):
+        blockers.append(UnreferencedCommitsBlocker(commits=tuple(commits)))
+    if (
+        branch
+        and branch.upstream_remote == REMOTE
+        and branch.upstream_branch not in (None, default_branch)
+        and not branch.upstream_gone
+        and git.ref_exists(f"refs/remotes/{REMOTE}/{branch.upstream_branch}", cwd=repo)
+    ):
+        blockers.append(LiveUpstreamBlocker(upstream=str(branch.upstream)))
+    return tuple(blockers)
+
+
+def _recent_activity(
+    status: Status,
+    worktree: Worktree,
+    last_activity: datetime | None,
+    now: datetime,
+    min_age: timedelta,
+) -> tuple[Blocker, ...]:
+    """Protects linked worktrees that may be in use despite having nothing obvious to lose:
+    worktrees with no commits of their own, such as one an agent has just created, and
+    worktrees whose directory is missing, which may have been moved or be on an unmounted volume.
+    """
+    if status is not Status.NO_UNIQUE_COMMITS and worktree.path.exists():
         return ()
     if last_activity is not None and now - last_activity >= min_age:
         return ()
@@ -215,7 +261,19 @@ def _branch_blockers(
 def worktree_blockers(
     worktree: Worktree, worktrees: list[Worktree], cwd: Path
 ) -> tuple[Blocker, ...]:
-    """Blockers for removing a linked worktree. `worktrees` is every worktree of the repo."""
+    """Blockers for removing a linked worktree. `worktrees` is every worktree of the repo.
+
+    A failure while checking becomes an error blocker rather than stopping the analysis.
+    """
+    try:
+        return _worktree_blockers(worktree, worktrees, cwd)
+    except (git.GitError, OSError, ValueError) as exc:
+        return (ErrorBlocker(detail=str(exc)),)
+
+
+def _worktree_blockers(
+    worktree: Worktree, worktrees: list[Worktree], cwd: Path
+) -> tuple[Blocker, ...]:
     if not worktree.path.exists():
         return (LockedBlocker(),) if worktree.locked else ()
     if worktree.prunable:
@@ -289,6 +347,8 @@ def _classify_tip(
             case _:
                 return Status.PR_CLOSED, pr_evidence
     if in_default:
+        if any(pr.state is PullRequestState.OPEN for pr in prs):
+            return Status.PR_OPEN, pr_evidence
         return Status.NO_UNIQUE_COMMITS, pr_evidence
 
     # Pull requests whose head the tip has moved beyond
@@ -329,5 +389,7 @@ def _contains(pr: PullRequest, tip: str, in_default: bool, repo: Path) -> bool:
         try:
             git.fetch_objects(REMOTE, f"refs/pull/{pr.number}/head", cwd=repo)
         except git.GitError:
+            return False
+        if not git.has_commit(pr.head_oid, cwd=repo):
             return False
     return git.is_ancestor(tip, pr.head_oid, cwd=repo)
