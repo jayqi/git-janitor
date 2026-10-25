@@ -38,7 +38,7 @@ Modules:
 - `model`: the domain model, as frozen dataclasses. Facts gathered from git and GitHub (branches, worktrees, pull requests) and the conclusions drawn from them (statuses, blockers, evidence, actions, candidates). Variants are separate types joined in unions (`Blocker`, `Evidence`, `Action`), and derived values like `Candidate.verdict` are computed properties, not stored fields.
 - `git`, `github`, `precious`: adapters that gather facts and return `model` types. Git is accessed with `subprocess` and parsers for machine-readable output (`--porcelain`, `-z`, `--format`); don't add GitPython. GitHub is accessed through the `GitHubClient` protocol, whose real implementation shells out to `gh api graphql`.
 - `analysis`, `clean`: the logic that turns facts into a `Report` and carries out deletions.
-- `serialize`, `cli`: presentation. `serialize` is the only place the JSON shape is defined, and the README documents it. The domain model can change without changing the JSON; a change to the JSON is a change to the public interface.
+- `serialize`, `cli`: presentation. `serialize` is the only place the JSON shape is defined. A change to the JSON output must update the README; an incompatible change must also bump `SCHEMA_VERSION`.
 
 ## Safety invariants
 
