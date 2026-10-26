@@ -37,7 +37,7 @@ def test_worktree_with_untracked_files_needs_review(sandbox):
 
     candidate = report.candidate("feat")
     assert candidate.verdict is Verdict.REVIEW
-    assert blocker(candidate, UntrackedBlocker).paths == ("notes/todo.txt",)
+    assert blocker(candidate, UntrackedBlocker).paths == ("notes/",)
 
 
 def test_ignored_files_from_global_excludes_are_precious(sandbox, global_excludes):

@@ -216,7 +216,7 @@ def worktree_status(cwd: Path) -> WorktreeStatus:
         "status",
         "--porcelain=v2",
         "-z",
-        "--untracked-files=all",
+        "--untracked-files=normal",
         "--ignored=matching",
         cwd=cwd,
     )

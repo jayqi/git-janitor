@@ -86,11 +86,11 @@ Any blocker downgrades a `merged` or `no_unique_commits` candidate to `review`.
 | Blocker | Meaning |
 |---|---|
 | `dirty` | The worktree has modified or staged tracked files. |
-| `untracked` | The worktree has untracked files that aren't ignored. |
+| `untracked` | The worktree has untracked files that aren't ignored. A directory with nothing tracked in it is listed once, ending in `/`. |
 | `precious_files` | The worktree has ignored files that look like personal work (see below). |
 | `locked` | The worktree is locked with `git worktree lock`. A locked worktree whose directory is missing gets only this blocker. |
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
-| `is_current` | The current directory is inside the worktree. |
+| `is_current` | The directory git-janitor runs in is inside the worktree. With `git -C <path>`, that's `<path>`, not your shell's current directory. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
 | `nested_repository` | A git repository is inside a precious ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
@@ -212,7 +212,7 @@ git config --global --add janitor.disposable '.envrc'
 `git janitor clean` takes candidate ids, or `--all` for every candidate whose verdict is `delete`. Running it with neither, or with both, is an error.
 
 - It always re-runs the analysis and refuses any target whose verdict isn't `delete`. There is no option to force it.
-- `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them. Only blockers whose contents git-janitor lists, or that only protect worktrees that may be in use, can be accepted: `precious_files` and `recent_activity`. For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. `--accept` can't be combined with `--all`. Outcomes list the accepted blockers in full, with the same fields as in the report, in `accepted`, and keep the candidate's own `verdict`.
+- `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them. Only blockers whose contents git-janitor lists, or that only protect worktrees that may be in use, can be accepted: `precious_files` and `recent_activity`. For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. `--accept` can't be combined with `--all`. Accepting `precious_files` covers whatever precious files exist when `clean` runs, including ones added since the report you reviewed. Outcomes list the accepted blockers in full, with the same fields as in the report, in `accepted`, and keep the candidate's own `verdict`.
 - Right before removing a worktree, it checks again that the worktree has no blockers other than accepted ones. It deletes a branch only if the branch still points at the analyzed tip and isn't checked out anywhere. Otherwise the target is `failed`.
 - It removes the worktree with `git worktree remove` (without `--force`), then deletes the branch and its `branch.<name>` config.
 - It only touches local branches and worktrees. It never deletes anything on GitHub.

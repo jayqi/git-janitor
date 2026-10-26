@@ -148,7 +148,7 @@ def test_report_json_worktree_blockers(in_sandbox, global_excludes):
         {"code": "locked", "detail": "the worktree is locked"},
         {"code": "in_progress_op", "detail": "merge in progress", "operation": "merge"},
         {"code": "dirty", "detail": "1 modified or staged files", "paths": ["file3.txt"]},
-        {"code": "untracked", "detail": "1 untracked files", "paths": ["notes.txt"]},
+        {"code": "untracked", "detail": "1 untracked paths", "paths": ["notes.txt"]},
         {
             "code": "precious_files",
             "detail": "1 precious ignored files",

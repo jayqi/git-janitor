@@ -146,7 +146,7 @@ class UntrackedBlocker:
 
     @property
     def detail(self) -> str:
-        return f"{len(self.paths)} untracked files"
+        return f"{len(self.paths)} untracked paths"
 
 
 @dataclass(frozen=True, slots=True)
