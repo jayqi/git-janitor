@@ -78,7 +78,7 @@ def test_branch_with_closed_pull_request_needs_review(sandbox):
     assert candidate.verdict is Verdict.REVIEW
 
 
-def test_branch_merged_into_another_branch_needs_review(sandbox):
+def test_branch_merged_into_another_branch_outside_default_needs_review(sandbox):
     sandbox.new_branch("base-feat")
     sandbox.push("base-feat")
     sandbox.new_branch("feat", start="base-feat")
@@ -105,6 +105,22 @@ def merge_stack(sandbox) -> int:
 
 def test_branch_merged_into_another_branch_with_merge_commit_in_default_is_deletable(sandbox):
     merge_stack(sandbox)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.MERGED
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_branch_merged_into_another_branch_later_merged_into_default_is_deletable(sandbox):
+    sandbox.new_branch("base-feat")
+    sandbox.push("base-feat")
+    sandbox.new_branch("feat", start="base-feat")
+    sandbox.squash_merge(sandbox.open_pr("feat", base="base-feat"))
+    sandbox.git("fetch", "-q", "origin")
+    sandbox.git("branch", "-f", "base-feat", "origin/base-feat")
+    sandbox.merge_commit_merge(sandbox.open_pr("base-feat"))
 
     report = analyze(sandbox.repo, sandbox.github)
 
