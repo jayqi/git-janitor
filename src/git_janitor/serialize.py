@@ -114,6 +114,7 @@ def evidence_to_dict(evidence: Evidence) -> dict[str, Any]:
                 "state": str(pr.state),
                 "base": pr.base,
                 "head_oid": pr.head_oid,
+                "merge_oid": pr.merge_oid,
                 "matched": matched,
             }
         case ExtraCommits(pull_request=number, commits=commits):

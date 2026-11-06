@@ -21,6 +21,7 @@ def in_sandbox(sandbox, monkeypatch):
 def test_report_json(in_sandbox):
     path, pr = in_sandbox.merged_worktree()
     tip = in_sandbox.tip("feat")
+    squash = in_sandbox.git("rev-parse", "main", cwd=in_sandbox.origin)
 
     result = runner.invoke(cli.app, ["report", "--json", "feat"])
 
@@ -60,6 +61,7 @@ def test_report_json(in_sandbox):
                     "state": "MERGED",
                     "base": "main",
                     "head_oid": tip,
+                    "merge_oid": squash,
                     "matched": True,
                 }
             ],
@@ -326,7 +328,7 @@ def test_outside_a_git_repository_fails(tmp_path, monkeypatch):
 def test_report_json_reused_branch_name_does_not_match_old_pull_request(in_sandbox):
     in_sandbox.new_branch("feat")
     old_pr = in_sandbox.open_pr("feat")
-    in_sandbox.squash_merge(old_pr)
+    squash = in_sandbox.squash_merge(old_pr)
     old_head = in_sandbox.tip("feat")
     in_sandbox.git("branch", "-D", "feat")
     in_sandbox.git("fetch", "-q", "origin")
@@ -350,6 +352,7 @@ def test_report_json_reused_branch_name_does_not_match_old_pull_request(in_sandb
                 "state": "MERGED",
                 "base": "main",
                 "head_oid": old_head,
+                "merge_oid": squash,
                 "matched": False,
             }
         ],

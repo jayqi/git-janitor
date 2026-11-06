@@ -92,6 +92,41 @@ def test_branch_merged_into_another_branch_needs_review(sandbox):
     assert candidate.verdict is Verdict.REVIEW
 
 
+def merge_stack(sandbox) -> int:
+    """Open `feat` on top of `base-feat` and merge both into main, as GitHub merges a stack."""
+    sandbox.new_branch("base-feat")
+    sandbox.new_branch("feat", start="base-feat")
+    base_pr = sandbox.open_pr("base-feat")
+    pr = sandbox.open_pr("feat", base="base-feat")
+    sandbox.squash_merge(base_pr)
+    sandbox.squash_merge(pr, onto="main")
+    return pr
+
+
+def test_branch_merged_into_another_branch_with_merge_commit_in_default_is_deletable(sandbox):
+    merge_stack(sandbox)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.MERGED
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_branch_with_commits_after_stacked_pull_request_in_default_needs_review(sandbox):
+    pr = merge_stack(sandbox)
+    extra = sandbox.add_commits("feat")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.status is Status.MERGED_PLUS_LOCAL
+    assert candidate.verdict is Verdict.REVIEW
+    [evidence] = [e for e in candidate.evidence if isinstance(e, ExtraCommits)]
+    assert evidence.pull_request == pr
+    assert [commit.sha for commit in evidence.commits] == extra
+
+
 def test_branch_without_commits_of_its_own_or_worktree_is_deletable(sandbox):
     sandbox.git("branch", "fresh", "main")
 

@@ -33,7 +33,8 @@ class GitHubClient(Protocol):
 PULL_REQUESTS_PER_HEAD = 20
 
 PULL_REQUEST_FIELDS = (
-    "number url state baseRefName headRefName headRefOid baseRepository { nameWithOwner }"
+    "number url state baseRefName headRefName headRefOid mergeCommit { oid } "
+    "baseRepository { nameWithOwner }"
 )
 
 
@@ -158,6 +159,7 @@ def _pull_requests(nodes: list[dict], name_with_owner: str) -> list[PullRequest]
             base=node["baseRefName"],
             head_name=node["headRefName"],
             head_oid=node["headRefOid"],
+            merge_oid=node["mergeCommit"] and node["mergeCommit"]["oid"],
         )
         for node in nodes
         if node["baseRepository"]["nameWithOwner"].lower() == name_with_owner.lower()
