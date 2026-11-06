@@ -26,6 +26,7 @@ from git_janitor.serialize import clean_result_to_dict, report_to_dict
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
     help="Find local branches and worktrees whose work is merged on GitHub, and clean them up.",
 )
 console = Console()

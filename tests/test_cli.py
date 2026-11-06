@@ -316,6 +316,21 @@ def test_clean_needs_either_targets_or_all(in_sandbox, args):
     assert "--all" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("args", "usage"),
+    [
+        (["-h"], "Usage: git-janitor [OPTIONS] COMMAND"),
+        (["report", "-h"], "Usage: git-janitor report [OPTIONS]"),
+        (["clean", "-h"], "Usage: git-janitor clean [OPTIONS]"),
+    ],
+)
+def test_short_help_option_prints_help(args, usage):
+    result = runner.invoke(cli.app, args, prog_name="git-janitor")
+
+    assert result.exit_code == 0, result.output
+    assert usage in result.stdout
+
+
 def test_outside_a_git_repository_fails(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
