@@ -4,6 +4,7 @@ import os
 import shutil
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from git_janitor import cli, git
@@ -328,7 +329,7 @@ def test_short_help_option_prints_help(args, usage):
     result = runner.invoke(cli.app, args, prog_name="git-janitor")
 
     assert result.exit_code == 0, result.output
-    assert usage in result.stdout
+    assert usage in Text.from_ansi(result.stdout).plain
 
 
 def test_outside_a_git_repository_fails(tmp_path, monkeypatch):
