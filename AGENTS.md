@@ -45,7 +45,7 @@ Modules:
 These are the reasons the tool exists. Don't weaken them without an explicit decision from the maintainer.
 
 - A pull request only counts if the local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch. Matching by branch name alone is never enough.
-- Only merges into the default branch count.
+- Only merges that reached the default branch count: the pull request's base is the default branch, or its merge commit is in the default branch.
 - Only `merged` and `no_unique_commits` candidates with no blockers get the `delete` verdict. `no_unique_commits` worktrees stay blocked until inactive for `janitor.minAge`.
 - Pull requests only count if their base repository is origin.
 - `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides `precious_files` and `recent_activity`, and only for explicit targets.

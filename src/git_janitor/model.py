@@ -75,6 +75,7 @@ class PullRequest:
     base: str
     head_name: str
     head_oid: str
+    merge_oid: str | None
 
 
 # Conclusions

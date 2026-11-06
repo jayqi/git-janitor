@@ -37,7 +37,9 @@ class FakeGh:
         return dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
 
 
-def pr_node(number, head, state="MERGED", base="main", oid="abc123", repo="owner/repo"):
+def pr_node(
+    number, head, state="MERGED", base="main", oid="abc123", merge_oid=None, repo="owner/repo"
+):
     return {
         "number": number,
         "url": f"https://github.com/{repo}/pull/{number}",
@@ -45,13 +47,19 @@ def pr_node(number, head, state="MERGED", base="main", oid="abc123", repo="owner
         "baseRefName": base,
         "headRefName": head,
         "headRefOid": oid,
+        "mergeCommit": merge_oid and {"oid": merge_oid},
         "baseRepository": {"nameWithOwner": repo},
     }
 
 
 def test_fetch_returns_default_branch_and_pull_requests_by_head():
     gh = FakeGh(
-        {"feat": [pr_node(2, "feat", state="OPEN", oid="def456"), pr_node(1, "feat")]},
+        {
+            "feat": [
+                pr_node(2, "feat", state="OPEN", oid="def456"),
+                pr_node(1, "feat", merge_oid="fff999"),
+            ]
+        },
         default_branch="trunk",
     )
     client = GhGitHubClient(run_gh=gh)
@@ -69,6 +77,7 @@ def test_fetch_returns_default_branch_and_pull_requests_by_head():
                 base="main",
                 head_name="feat",
                 head_oid="def456",
+                merge_oid=None,
             ),
             PullRequest(
                 number=1,
@@ -77,6 +86,7 @@ def test_fetch_returns_default_branch_and_pull_requests_by_head():
                 base="main",
                 head_name="feat",
                 head_oid="abc123",
+                merge_oid="fff999",
             ),
         ],
         "other": [],
@@ -157,6 +167,7 @@ def test_fetch_looks_up_pull_requests_by_commit():
                 base="main",
                 head_name="renamed",
                 head_oid="aaa111",
+                merge_oid=None,
             )
         ],
         "bbb222": [],

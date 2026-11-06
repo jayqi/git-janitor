@@ -41,7 +41,9 @@ To run against a repository other than the current directory, use `git -C <path>
 
 ## How merge status is decided
 
-A branch counts as merged only if **GitHub reports a pull request containing its local tip as merged into origin's default branch**. A merged pull request with the same branch name is not enough: the pull request must contain the branch's local tip. With squash and rebase merges, the branch's own commits never appear in the default branch; what's checked is that the pull request containing them was merged.
+A branch counts as merged only if **GitHub reports a pull request containing its local tip as merged, and the merge reached origin's default branch**: the pull request's base is the default branch, or its merge commit is in the default branch. A merged pull request with the same branch name is not enough: the pull request must contain the branch's local tip. With squash and rebase merges, the branch's own commits never appear in the default branch; what's checked is that the pull request containing them was merged.
+
+The merge commit condition covers stacked pull requests: when GitHub merges a stack, each pull request keeps the branch below it as its base, but its merge commit is created on the default branch. It also covers a pull request merged into a branch whose history, including that merge commit, was later merged into the default branch. If that branch was squash- or rebase-merged instead, the merge commit isn't in the default branch, and the pull request is `merged_into_other_base`.
 
 For each branch, git-janitor looks up pull requests on origin whose head branch has the same name as the local branch or its upstream on origin. A pull request **matches** if the local tip is the pull request's head commit, or an ancestor of the head that isn't already in the default branch. The second condition stops a branch created from older history, such as a fresh branch reusing a merged pull request's name, from matching. Pull requests that share the name but don't match are reported as evidence and otherwise ignored, so a reused branch name can't make new work look merged. Only pull requests into origin itself count, not ones into other repositories in its fork network.
 
@@ -51,11 +53,11 @@ The default branch comes from GitHub.
 
 | Status | Meaning |
 |---|---|
-| `merged` | A matching pull request was merged into the default branch. |
-| `merged_plus_local` | A pull request merged into the default branch, but the local tip has commits beyond its head. |
+| `merged` | A matching pull request was merged into the default branch, or its merge commit is in the default branch. |
+| `merged_plus_local` | A pull request was merged into the default branch, or its merge commit is in the default branch, but the local tip has commits beyond its head. |
 | `pr_open` | A matching pull request is open, or an open pull request's head is behind the local tip. Any open matching pull request takes precedence over closed or merged ones. |
 | `pr_closed` | A matching pull request was closed without merging. |
-| `merged_into_other_base` | A matching pull request was merged into a branch other than the default branch. |
+| `merged_into_other_base` | A matching pull request was merged into a branch other than the default branch, and its merge commit isn't in the default branch. |
 | `no_unique_commits` | No matching pull request, and the tip is already in the default branch, so deleting it loses no commits. This includes branches created but not yet committed to, and branches fast-forwarded to the default branch. |
 | `no_pr` | No matching pull request, and the tip has commits that aren't in the default branch. |
 | `default_branch` | This is the default branch. It is never deleted. |
@@ -162,6 +164,7 @@ git config --global --add janitor.disposable '.envrc'
           "state": "MERGED",
           "base": "main",
           "head_oid": "4f1c0de...",
+          "merge_oid": "9a2b7e1...",
           "matched": true
         }
       ],
@@ -179,7 +182,7 @@ git config --global --add janitor.disposable '.envrc'
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
 - `repo` is the path of the main worktree, wherever the command was run from.
 - `blockers` are objects with a `code` from the table above, a human-readable `detail`, and, where relevant, `paths` (relative to the worktree, for `dirty`, `untracked`, `nested_repository`, and `unreadable`), `entries` (`precious_files`, each with `path`, ending in `/` for a directory, and its `files` count, total `size` in bytes, and latest `modified` time), `operation` (`in_progress_op`: `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`), or `min_age` (`recent_activity`, like `7d`).
-- `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit, newest first, whether or not they matched. When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), it also holds an `extra_commits` entry with that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
+- `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit, newest first, whether or not they matched. `merge_oid` is the pull request's merge commit, or `null` if it isn't merged. When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), it also holds an `extra_commits` entry with that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
 - `actions` lists, in order, what `clean` would do.
 - `last_activity` is an ISO 8601 time, or `null` if git has no record of activity.
 

@@ -259,13 +259,11 @@ def _classify_tip(
         return Status.PR_OPEN, pr_evidence
     if matching:
         pr = max(matching, key=lambda pr: pr.number)
-        match pr.state:
-            case PullRequestState.MERGED if pr.base == default_branch:
-                return Status.MERGED, pr_evidence
-            case PullRequestState.MERGED:
-                return Status.MERGED_INTO_OTHER_BASE, pr_evidence
-            case _:
-                return Status.PR_CLOSED, pr_evidence
+        if _merged_into_default(pr, default_ref, default_branch, repo):
+            return Status.MERGED, pr_evidence
+        if pr.state is PullRequestState.MERGED:
+            return Status.MERGED_INTO_OTHER_BASE, pr_evidence
+        return Status.PR_CLOSED, pr_evidence
     if in_default:
         return Status.NO_UNIQUE_COMMITS, pr_evidence
 
@@ -275,7 +273,7 @@ def _classify_tip(
         for pr in prs
         if (
             pr.state is PullRequestState.OPEN
-            or (pr.state is PullRequestState.MERGED and pr.base == default_branch)
+            or _merged_into_default(pr, default_ref, default_branch, repo)
         )
         and git.has_commit(pr.head_oid, cwd=repo)
         and git.is_ancestor(pr.head_oid, tip, cwd=repo)
@@ -291,6 +289,23 @@ def _classify_tip(
         return status, (*pr_evidence, extra)
 
     return Status.NO_PR, pr_evidence
+
+
+def _merged_into_default(
+    pr: PullRequest, default_ref: str, default_branch: str, repo: Path
+) -> bool:
+    """Whether a pull request was merged into the default branch, or into another branch with
+    its merge commit in the default branch, as when GitHub merges a stack of pull requests.
+    """
+    if pr.state is not PullRequestState.MERGED:
+        return False
+    if pr.base == default_branch:
+        return True
+    return (
+        pr.merge_oid is not None
+        and git.has_commit(pr.merge_oid, cwd=repo)
+        and git.is_ancestor(pr.merge_oid, default_ref, cwd=repo)
+    )
 
 
 def _contains(pr: PullRequest, tip: str, in_default: bool, repo: Path) -> bool:

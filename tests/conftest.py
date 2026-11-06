@@ -155,6 +155,7 @@ class Sandbox:
                 base=base,
                 head_name=branch,
                 head_oid=head_oid,
+                merge_oid=None,
             )
         )
         self._associate_pr_commits(number)
@@ -188,10 +189,16 @@ class Sandbox:
         self._associate_pr_commits(number)
         return head_oid
 
-    def squash_merge(self, number: int, *, delete_head: bool = True) -> str:
-        """Squash-merge a pull request on origin, the way GitHub does."""
+    def squash_merge(
+        self, number: int, *, delete_head: bool = True, onto: str | None = None
+    ) -> str:
+        """Squash-merge a pull request on origin, the way GitHub does.
+
+        `onto` squashes onto that branch instead of the pull request's base, as GitHub does
+        when it merges a stack of pull requests.
+        """
         pr = self.github.get(number)
-        base_ref = f"refs/heads/{pr.base}"
+        base_ref = f"refs/heads/{onto or pr.base}"
         tree = run_git(
             "merge-tree", "--write-tree", base_ref, pr.head_oid, cwd=self.origin
         ).splitlines()[0]
@@ -201,7 +208,7 @@ class Sandbox:
         run_git("update-ref", base_ref, squash, cwd=self.origin)
         if delete_head:
             run_git("update-ref", "-d", f"refs/heads/{pr.head_name}", cwd=self.origin)
-        self.github.update(number, state=PullRequestState.MERGED)
+        self.github.update(number, state=PullRequestState.MERGED, merge_oid=squash)
         self.github.associate(number, [squash])
         return squash
 
@@ -225,7 +232,7 @@ class Sandbox:
         )
         run_git("update-ref", base_ref, merge, cwd=self.origin)
         run_git("update-ref", "-d", f"refs/heads/{pr.head_name}", cwd=self.origin)
-        self.github.update(number, state=PullRequestState.MERGED)
+        self.github.update(number, state=PullRequestState.MERGED, merge_oid=merge)
         self.github.associate(number, [merge])
         return merge
 
