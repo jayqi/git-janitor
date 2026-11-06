@@ -67,6 +67,8 @@ git janitor clean feat-x --accept precious_files   # delete despite reviewed pre
 
 To run against a repository other than the current directory, use `git -C <path> janitor ...`.
 
+For help, run `git janitor -h` or `git janitor <command> -h`. `git janitor --help` doesn't work, because git turns it into `git help janitor`, which looks for a man page that isn't installed.
+
 > [!NOTE]
 > Both commands run `git fetch origin --prune` first. Pass `--no-fetch` to skip it. Even with `--no-fetch`, git-janitor may fetch a pull request's head commit (`refs/pull/<N>/head`) when it's missing locally. If that fetch fails, the pull request is treated as not matching.
 
