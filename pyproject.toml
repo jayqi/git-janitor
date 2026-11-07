@@ -3,6 +3,8 @@ name = "git-janitor"
 version = "0.1.0"
 description = "Gather evidence on whether local git branches and worktrees are merged on GitHub, and clean up the ones that are"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Jay Qi", email = "jayqi@users.noreply.github.com" }
 ]
