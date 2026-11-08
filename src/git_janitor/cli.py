@@ -19,6 +19,7 @@ from git_janitor.model import (
     Candidate,
     CleanResult,
     PullRequestEvidence,
+    SameTree,
     Verdict,
 )
 from git_janitor.serialize import clean_result_to_dict, report_to_dict
@@ -147,8 +148,8 @@ def candidates_table(candidates: Sequence[Candidate]) -> Table:
         table.add_column(column, overflow="fold")
     for candidate in candidates:
         style = VERDICT_STYLES[candidate.verdict]
-        matched = [
-            e.pull_request
+        numbers = [e.pull_request for e in candidate.evidence if isinstance(e, SameTree)] + [
+            e.pull_request.number
             for e in candidate.evidence
             if isinstance(e, PullRequestEvidence) and e.matched
         ]
@@ -158,7 +159,7 @@ def candidates_table(candidates: Sequence[Candidate]) -> Table:
             str(candidate.status),
             escape(os.path.relpath(candidate.worktree.path)) if candidate.worktree else "",
             ", ".join(str(b.code) for b in candidate.blockers),
-            f"#{matched[0].number}" if matched else "",
+            f"#{numbers[0]}" if numbers else "",
         )
     return table
 

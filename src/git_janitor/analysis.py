@@ -25,6 +25,7 @@ from git_janitor.model import (
     RecentActivityBlocker,
     RemoveWorktree,
     Report,
+    SameTree,
     Status,
     UnreadableBlocker,
     UntrackedBlocker,
@@ -36,6 +37,15 @@ from git_janitor.precious import scan_ignored
 REMOTE = "origin"
 MIN_AGE_CONFIG_KEY = "janitor.minAge"
 DEFAULT_MIN_AGE = timedelta(days=7)
+SAME_TREE_REPLACES = frozenset(
+    {
+        Status.PR_CLOSED,
+        Status.MERGED_INTO_OTHER_BASE,
+        Status.MERGED_PLUS_LOCAL,
+        Status.NO_PR,
+    }
+)
+"""Statuses that a same-tree match replaces with `merged_same_tree`."""
 
 
 def analyze(
@@ -248,6 +258,23 @@ def _classify_tip(
     repo: Path,
 ) -> tuple[Status, tuple[Evidence, ...]]:
     """Classify a branch tip or detached HEAD against the pull requests that might contain it."""
+    status, evidence = _classify_by_head(tip, prs, default_ref, default_branch, repo)
+    if status in SAME_TREE_REPLACES:
+        same_tree = _same_tree(tip, prs, default_ref, repo)
+        if same_tree:
+            pr_evidence = tuple(e for e in evidence if isinstance(e, PullRequestEvidence))
+            return Status.MERGED_SAME_TREE, (*pr_evidence, same_tree)
+    return status, evidence
+
+
+def _classify_by_head(
+    tip: str,
+    prs: list[PullRequest],
+    default_ref: str,
+    default_branch: str,
+    repo: Path,
+) -> tuple[Status, tuple[Evidence, ...]]:
+    """Classify a tip by whether pull requests' heads contain it."""
     in_default = git.is_ancestor(tip, default_ref, cwd=repo)
     matched = {pr.number for pr in prs if _contains(pr, tip, in_default, repo)}
     pr_evidence = tuple(
@@ -289,6 +316,25 @@ def _classify_tip(
         return status, (*pr_evidence, extra)
 
     return Status.NO_PR, pr_evidence
+
+
+def _same_tree(tip: str, prs: list[PullRequest], default_ref: str, repo: Path) -> SameTree | None:
+    """The highest-numbered merged pull request whose merge commit is in the default branch and
+    has the identical tree as `tip`.
+    """
+    tip_tree = None
+    for pr in sorted(prs, key=lambda pr: pr.number, reverse=True):
+        if (
+            pr.state is not PullRequestState.MERGED
+            or pr.merge_oid is None
+            or not git.has_commit(pr.merge_oid, cwd=repo)
+            or not git.is_ancestor(pr.merge_oid, default_ref, cwd=repo)
+        ):
+            continue
+        tip_tree = tip_tree or git.tree_id(tip, cwd=repo)
+        if git.tree_id(pr.merge_oid, cwd=repo) == tip_tree:
+            return SameTree(pull_request=pr.number, merge_oid=pr.merge_oid)
+    return None
 
 
 def _merged_into_default(

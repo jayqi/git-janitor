@@ -19,6 +19,7 @@ from git_janitor.model import (
     RecentActivityBlocker,
     RemoveWorktree,
     Report,
+    SameTree,
     TargetOutcome,
     UnreadableBlocker,
     UntrackedBlocker,
@@ -123,6 +124,8 @@ def evidence_to_dict(evidence: Evidence) -> dict[str, Any]:
                 "pull_request": number,
                 "commits": [{"sha": c.sha, "subject": c.subject} for c in commits],
             }
+        case SameTree(pull_request=number, merge_oid=merge_oid):
+            return {"kind": "same_tree", "pull_request": number, "merge_oid": merge_oid}
 
 
 def action_to_dict(action: Action) -> dict[str, Any]:

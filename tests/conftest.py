@@ -189,6 +189,32 @@ class Sandbox:
         self._associate_pr_commits(number)
         return head_oid
 
+    def rewrite_pr_head(self, number: int, *, onto: str | None = None) -> str:
+        """Replace a pull request's head with a commit on its base that has the old head's tree,
+        as when GitHub or `gh stack` rebases and force-pushes a pull request. This only matches a
+        real rebase when the new base has nothing the old head lacks.
+
+        `onto` rebases onto that branch instead of the pull request's base.
+        """
+        pr = self.github.get(number)
+        base_ref = f"refs/heads/{onto or pr.base}"
+        head_oid = run_git(
+            "commit-tree",
+            f"{pr.head_oid}^{{tree}}",
+            "-p",
+            base_ref,
+            "-m",
+            f"Rebased (#{number})",
+            cwd=self.origin,
+        )
+        run_git("update-ref", f"refs/heads/{pr.head_name}", head_oid, cwd=self.origin)
+        run_git("update-ref", f"refs/pull/{number}/head", head_oid, cwd=self.origin)
+        self.github.update(number, head_oid=head_oid)
+        # GitHub stops associating commits that a force push removed from the pull request
+        self.github.associated_commits[number] = set()
+        self._associate_pr_commits(number)
+        return head_oid
+
     def squash_merge(
         self, number: int, *, delete_head: bool = True, onto: str | None = None
     ) -> str:
