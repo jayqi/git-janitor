@@ -583,3 +583,247 @@ def test_report_json_without_recorded_activity(in_sandbox):
     [candidate] = report_json("scratch")["candidates"]
 
     assert candidate["last_activity"] is None
+
+
+def fetch(sandbox):
+    sandbox.git("fetch", "-q", "--prune", "origin")
+
+
+def test_report_json_merged_same_tree(in_sandbox):
+    path = in_sandbox.add_worktree("feat", create=True)
+    tip = in_sandbox.commit(cwd=path)
+    pr = in_sandbox.open_pr("feat")
+    head = in_sandbox.rewrite_pr_head(pr)
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    pop_last_activity(candidate)
+    assert candidate == {
+        "id": "feat",
+        "verdict": "delete",
+        "status": "merged_same_tree",
+        "branch": {"name": "feat", "tip": tip, "upstream": "origin/feat", "upstream_gone": True},
+        "worktree": {
+            "path": str(path),
+            "head": tip,
+            "detached": False,
+            "is_main": False,
+            "locked": False,
+            "prunable": False,
+        },
+        "blockers": [],
+        "evidence": [
+            {
+                "kind": "pull_request",
+                "number": pr,
+                "url": f"https://github.com/owner/repo/pull/{pr}",
+                "state": "MERGED",
+                "base": "main",
+                "head_oid": head,
+                "merge_oid": squash,
+                "matched": False,
+            },
+            {"kind": "same_tree", "pull_request": pr, "merge_oid": squash},
+        ],
+        "actions": [
+            {"kind": "remove_worktree", "path": str(path)},
+            {"kind": "delete_branch", "name": "feat", "tip": tip},
+        ],
+    }
+
+
+def test_report_json_detached_worktree_merged_same_tree(in_sandbox):
+    tip = in_sandbox.new_branch("feat")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.git("branch", "-D", "feat")
+    path = in_sandbox.add_detached_worktree("scratch", tip)
+    in_sandbox.rewrite_pr_head(pr)
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    [candidate] = report_json(str(path))["candidates"]
+
+    assert candidate["verdict"] == "delete"
+    assert candidate["status"] == "merged_same_tree"
+    assert candidate["evidence"][-1] == {
+        "kind": "same_tree",
+        "pull_request": pr,
+        "merge_oid": squash,
+    }
+    assert candidate["actions"] == [{"kind": "remove_worktree", "path": str(path)}]
+
+
+def test_report_json_stacked_pull_request_rewritten_onto_merged_base_is_merged_same_tree(
+    in_sandbox,
+):
+    in_sandbox.new_branch("base-feat")
+    in_sandbox.new_branch("feat", start="base-feat")
+    base_pr = in_sandbox.open_pr("base-feat")
+    pr = in_sandbox.open_pr("feat", base="base-feat")
+    in_sandbox.rewrite_pr_head(base_pr)
+    base_squash = in_sandbox.squash_merge(base_pr)
+    in_sandbox.rewrite_pr_head(pr, onto="main")
+    squash = in_sandbox.squash_merge(pr, onto="main")
+    fetch(in_sandbox)
+
+    base_candidate, candidate = report_json("base-feat", "feat")["candidates"]
+
+    assert base_candidate["status"] == "merged_same_tree"
+    assert base_candidate["evidence"][-1] == {
+        "kind": "same_tree",
+        "pull_request": base_pr,
+        "merge_oid": base_squash,
+    }
+    assert candidate["status"] == "merged_same_tree"
+    assert candidate["evidence"][-1] == {
+        "kind": "same_tree",
+        "pull_request": pr,
+        "merge_oid": squash,
+    }
+
+
+def test_report_json_default_branch_changed_before_rewritten_merge_has_no_pr(in_sandbox):
+    in_sandbox.new_branch("feat")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.rewrite_pr_head(pr)
+    in_sandbox.commit()
+    in_sandbox.git("push", "-q", "origin", "main")
+    in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "no_pr"
+    assert [e["kind"] for e in candidate["evidence"]] == ["pull_request"]
+
+
+def test_report_json_unfetched_merge_commit_has_no_pr(in_sandbox):
+    in_sandbox.new_branch("feat")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.rewrite_pr_head(pr)
+    in_sandbox.squash_merge(pr)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "no_pr"
+    assert [e["kind"] for e in candidate["evidence"]] == ["pull_request"]
+
+
+def test_report_json_same_tree_merge_commit_outside_default_branch_has_no_pr(in_sandbox):
+    in_sandbox.new_branch("base-feat")
+    in_sandbox.push("base-feat")
+    in_sandbox.new_branch("feat", start="base-feat")
+    pr = in_sandbox.open_pr("feat", base="base-feat")
+    in_sandbox.rewrite_pr_head(pr)
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+    assert in_sandbox.git("log", "-1", "--format=%T", squash) == in_sandbox.git(
+        "log", "-1", "--format=%T", "feat"
+    )
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "no_pr"
+    assert [e["kind"] for e in candidate["evidence"]] == ["pull_request"]
+
+
+def test_report_json_same_tree_takes_precedence_over_closed_pull_request(in_sandbox):
+    in_sandbox.new_branch("feat")
+    closed_pr = in_sandbox.open_pr("feat")
+    in_sandbox.close_pr(closed_pr)
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.rewrite_pr_head(pr)
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "merged_same_tree"
+    assert [
+        (e["kind"], e.get("number"), e.get("matched")) for e in candidate["evidence"][:-1]
+    ] == [("pull_request", pr, False), ("pull_request", closed_pr, True)]
+    assert candidate["evidence"][-1] == {
+        "kind": "same_tree",
+        "pull_request": pr,
+        "merge_oid": squash,
+    }
+
+
+@pytest.mark.parametrize("behind", [False, True])
+def test_report_json_open_pull_request_takes_precedence_over_same_tree(in_sandbox, behind):
+    in_sandbox.new_branch("feat")
+    in_sandbox.open_pr("feat", base="release")
+    if behind:
+        in_sandbox.add_commits("feat")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.rewrite_pr_head(pr)
+    in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "pr_open"
+    assert "same_tree" not in [e["kind"] for e in candidate["evidence"]]
+
+
+def test_report_json_ignored_submodule_pointer_difference_is_not_same_tree(in_sandbox):
+    in_sandbox.git("config", "diff.ignoreSubmodules", "all")
+    in_sandbox.git("checkout", "-q", "-b", "feat")
+    (in_sandbox.repo / ".gitmodules").write_text(
+        '[submodule "sub"]\n\tpath = sub\n\turl = https://example.com/sub.git\n\tignore = all\n'
+    )
+    in_sandbox.git("add", ".gitmodules")
+    in_sandbox.git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},sub")
+    in_sandbox.git("commit", "-q", "-m", "Add submodule")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.git("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
+    in_sandbox.git("commit", "-q", "--amend", "--no-edit")
+    in_sandbox.git("checkout", "-q", "main")
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+    in_sandbox.git("diff", "--quiet", "feat", squash)  # git diff sees no difference
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "no_pr"
+
+
+def test_report_table_shows_same_tree_pull_request(in_sandbox):
+    in_sandbox.new_branch("feat")
+    pr = in_sandbox.open_pr("feat")
+    in_sandbox.rewrite_pr_head(pr)
+    in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+
+    result = runner.invoke(cli.app, ["report", "--no-fetch", "feat"])
+
+    assert result.exit_code == 0, result.output
+    assert "merged_same_tree" in result.stdout
+    assert f"#{pr}" in result.stdout
+
+
+def test_report_json_branch_that_merged_default_branch_after_its_merge_is_merged_same_tree(
+    in_sandbox,
+):
+    in_sandbox.new_branch("feat")
+    pr = in_sandbox.open_pr("feat")
+    squash = in_sandbox.squash_merge(pr)
+    fetch(in_sandbox)
+    in_sandbox.git("checkout", "-q", "feat")
+    in_sandbox.git("merge", "-q", "--no-ff", "-m", "Merge main into feat", "origin/main")
+    in_sandbox.git("checkout", "-q", "main")
+
+    [candidate] = report_json("feat")["candidates"]
+
+    assert candidate["status"] == "merged_same_tree"
+    assert [(e["kind"], e.get("matched")) for e in candidate["evidence"]] == [
+        ("pull_request", False),
+        ("same_tree", None),
+    ]
+    assert candidate["evidence"][-1] == {
+        "kind": "same_tree",
+        "pull_request": pr,
+        "merge_oid": squash,
+    }

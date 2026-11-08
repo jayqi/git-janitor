@@ -33,7 +33,7 @@ Common ways to clean up merged branches each miss something:
 - **Matching merged pull requests by branch name** treats a new branch that reuses an old name as merged.
 - **`git worktree remove --force`** deletes untracked and ignored files, like notes or plans you kept in the worktree.
 
-git-janitor checks that a merged pull request contains each branch's exact tip, and that each worktree holds nothing that would be lost, before deleting anything. When it does delete:
+git-janitor checks that a merged pull request contains each branch's exact tip, or that a merge commit in the default branch has the tip's exact contents, and that each worktree holds nothing that would be lost, before deleting anything. When it does delete:
 
 - It never forces a deletion, and has no option to.
 - It never modifies anything on GitHub or origin.
@@ -87,7 +87,7 @@ Each candidate gets a verdict:
 
 | Verdict | Meaning |
 |---|---|
-| `delete` | Status is `merged` or `no_unique_commits`, and there are no blockers. `clean` will delete it. |
+| `delete` | Status is `merged`, `merged_same_tree`, or `no_unique_commits`, and there are no blockers. `clean` will delete it. |
 | `keep` | The work is active (`pr_open`), or it's the default branch. |
 | `review` | Everything else. A person, or an agent investigating the evidence, needs to decide. |
 
@@ -98,6 +98,7 @@ The verdict comes from the candidate's **status** and its **blockers**.
 | Status | Meaning | Verdict |
 |---|---|---|
 | `merged` | A matching pull request was merged, and the merge reached the default branch (see below). | `delete`, unless blocked |
+| `merged_same_tree` | A pull request was merged, its merge commit is in the default branch, and it has exactly the same contents as the local tip, as when the pull request was rebased before merging (see [Rebased pull requests](#rebased-pull-requests)). | `delete`, unless blocked |
 | `no_unique_commits` | No matching pull request, and the tip is already in the default branch, so deleting it loses no commits. This includes branches created but not yet committed to, and branches fast-forwarded to the default branch. | `delete`, unless blocked |
 | `merged_plus_local` | A pull request was merged, and the merge reached the default branch, but the local tip has commits beyond its head. | `review` |
 | `pr_open` | A matching pull request is open, or an open pull request's head is behind the local tip. Any open matching pull request takes precedence over closed or merged ones. | `keep` |
@@ -117,7 +118,7 @@ For each branch, git-janitor looks up pull requests on origin whose head branch 
 With squash and rebase merges, the branch's own commits never appear in the default branch. What's checked is that the pull request containing them was merged.
 
 > [!IMPORTANT]
-> A merged pull request with the same branch name isn't enough. Requiring that the tip isn't already in the default branch stops a branch created from older history, such as a new branch reusing a merged pull request's name, from matching. Pull requests that share the name but don't match are reported as evidence and otherwise ignored, so a reused branch name can't make new work look merged.
+> A merged pull request with the same branch name isn't enough. Requiring that the tip isn't already in the default branch stops a branch created from older history, such as a new branch reusing a merged pull request's name, from matching. Pull requests that share the name but don't match are reported as evidence. They can still count by having an identical tree (see [Rebased pull requests](#rebased-pull-requests)), but new work changes the tree, so a reused branch name can't make new work look merged.
 
 Only pull requests into origin itself count, not ones into other repositories in its fork network. The default branch comes from GitHub.
 
@@ -127,6 +128,22 @@ When GitHub merges a stack of pull requests, each one keeps the branch below it 
 
 It also counts a pull request merged into a branch whose history, including that merge commit, was later merged into the default branch. If that branch was squash- or rebase-merged instead, the merge commit isn't in the default branch, and the pull request is `merged_into_other_base`.
 
+#### Rebased pull requests
+
+When GitHub or a tool like `gh stack` rebases a pull request before merging it, for example after the pull request below it in a stack was merged, it force-pushes a new head. The local branch still points at the old head, which is neither the new head nor an ancestor of it, so the pull request doesn't match.
+
+git-janitor then compares contents instead. A tip is `merged_same_tree` when, among the merged pull requests found for it, one has a merge commit that:
+
+1. is present locally. It isn't fetched for this check, so with `--no-fetch` it may be missing.
+2. is in the default branch.
+3. has the identical tree as the local tip: the same tree object ID, so the same files with the same contents and modes, and the same submodule commits.
+
+If several match, the highest-numbered one is reported. This check only replaces statuses whose verdict would otherwise be `review`: `pr_closed`, `merged_into_other_base`, `merged_plus_local`, and `no_pr`. It never overrides `pr_open`, `merged`, or `no_unique_commits`.
+
+`merged_same_tree` guarantees that the tip's contents are in the default branch's history, not that its commits are. Their messages, and changes that were added and then removed before the tip, may exist only locally. Squash merging gives those up anyway.
+
+The trees must be identical. If any other commit reached the default branch between the rebase and the merge, the merge commit's tree includes it, and the branch stays at `review`. The same check covers a branch that merged the default branch after its pull request was merged, as long as nothing else reached the default branch in between.
+
 #### Detached worktrees
 
 A worktree with a detached HEAD is judged by its HEAD commit, against the pull requests GitHub associates with that commit: a pull request's own commits and its merge commit. An example is a worktree checked out at a pull request's head for review.
@@ -135,7 +152,7 @@ A worktree in the middle of a rebase or bisect is detached too, but git-janitor 
 
 ### Blockers
 
-Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades a `merged` or `no_unique_commits` candidate to `review`.
+Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades a `merged`, `merged_same_tree`, or `no_unique_commits` candidate to `review`.
 
 | Blocker | Meaning |
 |---|---|
@@ -279,6 +296,7 @@ git config --global --add janitor.disposable '.envrc'
 - `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit. They're newest first, whether or not they matched.
   - `merge_oid` is the pull request's merge commit, or `null` if it isn't merged.
   - When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), `evidence` also holds an `extra_commits` entry. It has that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
+  - When the status is `merged_same_tree`, `evidence` ends with a `same_tree` entry: `{"kind": "same_tree", "pull_request": 42, "merge_oid": "9a2b7e1..."}`. It has the number of the pull request whose merge commit has the local tip's tree, and that merge commit. The pull request's own entry still has `matched: false`.
 - `actions` lists, in order, what `clean` would do.
 - `last_activity` is an ISO 8601 time, or `null` if git has no record of activity.
 
@@ -314,7 +332,7 @@ git config --global --add janitor.disposable '.envrc'
 
 `actions` are the candidate's planned actions. `recovery` covers only the actions that were carried out, or would be with `--dry-run`.
 
-`schema_version` increases whenever the shape of either output changes incompatibly.
+`schema_version` increases whenever the shape of either output changes incompatibly. New `status` values and evidence kinds don't count as incompatible, so accept ones you don't recognize.
 
 ## Exit codes
 

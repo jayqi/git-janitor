@@ -114,6 +114,13 @@ def commits_between(base: str, tip: str, cwd: Path, exclude: str | None = None) 
     return [Commit(*line.split("\0", 1)) for line in _lines(output)]
 
 
+def tree_id(commit: str, cwd: Path) -> str:
+    """The ID of `commit`'s tree, read from the commit object alone."""
+    return run_git(
+        "log", "-1", "--no-show-signature", "--format=%T", commit, "--", cwd=cwd
+    ).strip()
+
+
 def has_commit(sha: str, cwd: Path) -> bool:
     return succeeds("cat-file", "-e", f"{sha}^{{commit}}", cwd=cwd)
 

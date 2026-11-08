@@ -83,6 +83,7 @@ class PullRequest:
 
 class Status(StrEnum):
     MERGED = "merged"
+    MERGED_SAME_TREE = "merged_same_tree"
     MERGED_PLUS_LOCAL = "merged_plus_local"
     PR_OPEN = "pr_open"
     PR_CLOSED = "pr_closed"
@@ -113,7 +114,17 @@ class ExtraCommits:
     commits: tuple[Commit, ...]
 
 
-type Evidence = PullRequestEvidence | ExtraCommits
+@dataclass(frozen=True, slots=True)
+class SameTree:
+    """A merged pull request whose merge commit is in the default branch and has the same tree as
+    the local tip.
+    """
+
+    pull_request: int
+    merge_oid: str
+
+
+type Evidence = PullRequestEvidence | ExtraCommits | SameTree
 
 
 class BlockerCode(StrEnum):
@@ -288,8 +299,8 @@ class Candidate:
         return tuple(b for b in self.blockers if b.code not in accepted)
 
 
-DELETABLE_STATUSES = frozenset({Status.MERGED, Status.NO_UNIQUE_COMMITS})
-"""Statuses where deleting loses no commits."""
+DELETABLE_STATUSES = frozenset({Status.MERGED, Status.MERGED_SAME_TREE, Status.NO_UNIQUE_COMMITS})
+"""Statuses where deleting loses no content."""
 
 ACCEPTABLE_BLOCKERS = frozenset({BlockerCode.PRECIOUS_FILES, BlockerCode.RECENT_ACTIVITY})
 """Blockers that `clean` can be told to accept: precious files, which the blocker lists, and
