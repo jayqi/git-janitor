@@ -209,6 +209,8 @@ class Sandbox:
         run_git("update-ref", f"refs/heads/{pr.head_name}", head_oid, cwd=self.origin)
         run_git("update-ref", f"refs/pull/{number}/head", head_oid, cwd=self.origin)
         self.github.update(number, head_oid=head_oid)
+        # GitHub stops associating commits that a force push removed from the pull request
+        self.github.associated_commits[number] = set()
         self._associate_pr_commits(number)
         return head_oid
 

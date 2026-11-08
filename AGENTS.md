@@ -44,6 +44,8 @@ Modules:
 
 These are the reasons the tool exists. Don't weaken them without an explicit decision from the maintainer.
 
+They protect work, meaning the contents of branches and worktrees, not commits. Losing commit messages, intermediate commits, or the history of how a tip was reached is accepted when the tip's contents are in the default branch.
+
 - A pull request only counts if one of these holds:
   - The local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch.
   - It was merged, its merge commit is in the default branch, and the local tip has the identical tree object ID as that merge commit. This guarantees that the tip's contents are in the default branch, not that its commits are.

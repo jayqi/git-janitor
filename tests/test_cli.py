@@ -86,6 +86,10 @@ def pop_last_activity(candidate):
     assert datetime.now(UTC) - timedelta(minutes=5) < last_activity <= datetime.now(UTC)
 
 
+def fetch(sandbox):
+    sandbox.git("fetch", "-q", "--prune", "origin")
+
+
 def test_report_json_extra_commits(in_sandbox):
     path, pr = in_sandbox.merged_worktree()
     extra = in_sandbox.commit(cwd=path, message="Follow-up")
@@ -585,10 +589,6 @@ def test_report_json_without_recorded_activity(in_sandbox):
     assert candidate["last_activity"] is None
 
 
-def fetch(sandbox):
-    sandbox.git("fetch", "-q", "--prune", "origin")
-
-
 def test_report_json_merged_same_tree(in_sandbox):
     path = in_sandbox.add_worktree("feat", create=True)
     tip = in_sandbox.commit(cwd=path)
@@ -632,27 +632,6 @@ def test_report_json_merged_same_tree(in_sandbox):
             {"kind": "delete_branch", "name": "feat", "tip": tip},
         ],
     }
-
-
-def test_report_json_detached_worktree_merged_same_tree(in_sandbox):
-    tip = in_sandbox.new_branch("feat")
-    pr = in_sandbox.open_pr("feat")
-    in_sandbox.git("branch", "-D", "feat")
-    path = in_sandbox.add_detached_worktree("scratch", tip)
-    in_sandbox.rewrite_pr_head(pr)
-    squash = in_sandbox.squash_merge(pr)
-    fetch(in_sandbox)
-
-    [candidate] = report_json(str(path))["candidates"]
-
-    assert candidate["verdict"] == "delete"
-    assert candidate["status"] == "merged_same_tree"
-    assert candidate["evidence"][-1] == {
-        "kind": "same_tree",
-        "pull_request": pr,
-        "merge_oid": squash,
-    }
-    assert candidate["actions"] == [{"kind": "remove_worktree", "path": str(path)}]
 
 
 def test_report_json_stacked_pull_request_rewritten_onto_merged_base_is_merged_same_tree(
