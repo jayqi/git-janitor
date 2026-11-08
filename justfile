@@ -1,4 +1,4 @@
-# Keep in sync with just-version in .github/workflows/tests.yml
+# Keep in sync with just-version in .github/workflows/*.yml
 set minimum-version := '1.55.0'
 
 python := shell("cat .python-version")
@@ -27,12 +27,18 @@ typecheck python=python *args:
     uv run --python={{python}} --isolated --no-dev --group typecheck -- \
         ty check --python-version={{python}} {{args}}
 
-# Run zizmor audit
-zizmor:
-    uvx zizmor --gh-token $(gh auth token) .github/
+# Audit GitHub Actions workflows with zizmor (passes through args)
+zizmor *args:
+    uvx --exclude-newer "7 days" zizmor .github/ {{args}}
 
 # Run test suite (passes through args)
 [arg("python", long)]
 test python=python *args:
     uv run --python={{python}} --isolated --no-editable --no-dev --group tests --reinstall -- \
         python -I -m pytest {{args}}
+
+# Run all tests with Python version matrix
+test-all:
+    for python in 3.14 3.15; do \
+        just test --python=$python; \
+    done
