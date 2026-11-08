@@ -7,6 +7,7 @@ import pytest
 from git_janitor.analysis import analyze
 from git_janitor.model import (
     DeleteBranch,
+    DirtyBlocker,
     ErrorBlocker,
     InProgressOpBlocker,
     IsCurrentBlocker,
@@ -234,6 +235,78 @@ def test_analysis_does_not_rewrite_worktree_index(sandbox):
     analyze(sandbox.repo, sandbox.github)
 
     assert index.stat().st_mtime_ns == before
+
+
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_edits_to_files_git_status_skips_are_dirty(sandbox, flag):
+    path, _ = sandbox.merged_worktree()
+    sandbox.git("update-index", flag, "file2.txt", cwd=path)
+    (path / "file2.txt").write_text("edited\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert blocker(candidate, DirtyBlocker).paths == ("file2.txt",)
+
+
+@pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
+def test_unedited_files_git_status_skips_are_not_dirty(sandbox, flag):
+    path, _ = sandbox.merged_worktree()
+    sandbox.git("update-index", flag, "file2.txt", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
+
+
+def test_unedited_files_with_ignore_stat_are_not_dirty(sandbox):
+    sandbox.git("config", "core.ignoreStat", "true")
+    path, _ = sandbox.merged_worktree()
+    assert sandbox.git("ls-files", "-v", cwd=path).startswith("h ")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
+
+
+def test_unedited_skipped_file_with_line_ending_conversion_is_not_dirty(sandbox):
+    path = sandbox.add_worktree("feat", create=True)
+    (path / ".gitattributes").write_text("*.txt text eol=crlf\n")
+    sandbox.git("add", ".gitattributes", cwd=path)
+    sandbox.commit(cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    (path / "file2.txt").unlink()
+    sandbox.git("checkout", "--", "file2.txt", cwd=path)
+    assert (path / "file2.txt").read_bytes().endswith(b"\r\n")
+    sandbox.git("update-index", "--skip-worktree", "file2.txt", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
+
+
+def test_files_outside_sparse_checkout_are_not_dirty(sandbox):
+    path, _ = sandbox.merged_worktree()
+    sandbox.git("sparse-checkout", "set", "--no-cone", "/file1.txt", cwd=path)
+    assert not (path / "file2.txt").exists()
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert report.candidate("feat").verdict is Verdict.DELETE
+
+
+def test_skipped_symlink_is_dirty(sandbox):
+    path = sandbox.add_worktree("feat", create=True)
+    (path / "link").symlink_to("file1.txt")
+    sandbox.git("add", "link", cwd=path)
+    sandbox.git("commit", "-m", "Add link", cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("update-index", "--skip-worktree", "link", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert blocker(report.candidate("feat"), DirtyBlocker).paths == ("link",)
 
 
 CACHEDIR_TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# A cache directory.\n"

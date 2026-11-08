@@ -57,7 +57,7 @@ They protect work, meaning what can't be recovered from GitHub: a branch's tip, 
 - `clean` re-runs the analysis at deletion time, refuses anything that isn't `delete`, and has no force option. `--accept` only overrides `precious_files` and `recent_activity`, and only for explicit targets.
 - Worktrees are removed with `git worktree remove` without `--force`, before their branch is deleted.
 - Each deletion re-checks its target immediately beforehand: a worktree's blockers, and a branch's tip (deleted with a compare-and-swap `git update-ref -d`) and whether it's checked out.
-- Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, a worktree that can't be checked gets an `error` blocker, and a failed ancestry check is an error rather than a "no".
+- Checks fail closed. An ignored path that can't be attributed to an ignore rule is precious, an unreadable path is a blocker, a skip-worktree or assume-unchanged file that can't be compared with the index is dirty, a worktree that can't be checked gets an `error` blocker, and a failed ancestry check is an error rather than a "no".
 - Nothing on the remote is ever modified.
 
 ## Testing

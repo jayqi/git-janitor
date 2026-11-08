@@ -228,8 +228,9 @@ def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
     for operation in git.operations_in_progress(worktree.path):
         blockers.append(InProgressOpBlocker(operation=operation))
     status = git.worktree_status(worktree.path)
-    if status.changed:
-        blockers.append(DirtyBlocker(paths=status.changed))
+    changed = tuple(dict.fromkeys(status.changed + tuple(git.skipped_changes(worktree.path))))
+    if changed:
+        blockers.append(DirtyBlocker(paths=changed))
     if status.untracked:
         blockers.append(UntrackedBlocker(paths=status.untracked))
     scan = scan_ignored(worktree.path, status.ignored)
