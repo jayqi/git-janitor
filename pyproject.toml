@@ -59,7 +59,7 @@ include = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--cov=git_janitor --cov-report=term --cov-report=html --cov-report=xml"
+addopts = "--cov=git_janitor --cov-report=term --cov-report=html"
 testpaths = ["tests"]
 
 [tool.coverage.run]
@@ -68,5 +68,6 @@ source = ["git_janitor"]
 [tool.coverage.paths]
 git_janitor = [
   "src/git_janitor/",
-  "*/site-packages/git_janitor/"
+  "*/src/git_janitor/",
+  "*/site-packages/git_janitor/",
 ]

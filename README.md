@@ -1,5 +1,8 @@
 # git-janitor
 
+[![tests](https://github.com/jayqi/git-janitor/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/jayqi/git-janitor/actions/workflows/tests.yml?query=branch%3Amain)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jayqi/git-janitor/badges/coverage.json)](https://github.com/jayqi/git-janitor/actions/workflows/tests.yml?query=branch%3Amain)
+
 **Gather evidence on whether local git branches and worktrees are merged on GitHub, and clean up the ones that are.**
 
 git-janitor gives every local branch and worktree a verdict, and deletes only the ones it can verify are merged and safe to remove. It's designed to be used by coding agents first, with JSON output, and by people second.
