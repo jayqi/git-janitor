@@ -39,7 +39,7 @@ git-janitor checks that a merged pull request contains each branch's exact tip, 
 - It never modifies anything on GitHub or origin.
 - It prints a command to recreate each deleted branch.
 
-What git-janitor protects is your work: the contents of your branches and worktrees. It doesn't try to preserve commits. A branch is safe to delete once its contents are in the default branch, even if its commit messages or intermediate commits exist only locally, the same as when a pull request is squash-merged.
+git-janitor only deletes what you could get back from GitHub. A branch can be deleted when its tip, the files as you last left them, is in the default branch or a merged pull request. A worktree can be removed when it holds nothing beyond its branch's tip. How a branch got to its tip, such as its commit messages and intermediate commits, isn't protected.
 
 ## Installation
 
@@ -100,7 +100,7 @@ The verdict comes from the candidate's **status** and its **blockers**.
 | Status | Meaning | Verdict |
 |---|---|---|
 | `merged` | A matching pull request was merged, and the merge reached the default branch (see below). | `delete`, unless blocked |
-| `merged_same_tree` | A pull request was merged, its merge commit is in the default branch, and it has exactly the same contents as the local tip, as when the pull request was rebased before merging (see [Rebased pull requests](#rebased-pull-requests)). | `delete`, unless blocked |
+| `merged_same_tree` | A pull request was merged, its merge commit is in the default branch, and it has exactly the same contents as the local tip, as when the pull request was rebased before merging. It takes precedence over `pr_closed`, `merged_into_other_base`, `merged_plus_local`, and `no_pr` (see [Rebased pull requests](#rebased-pull-requests)). | `delete`, unless blocked |
 | `no_unique_commits` | No matching pull request, and the tip is already in the default branch, so deleting it loses no commits. This includes branches created but not yet committed to, and branches fast-forwarded to the default branch. | `delete`, unless blocked |
 | `merged_plus_local` | A pull request was merged, and the merge reached the default branch, but the local tip has commits beyond its head. | `review` |
 | `pr_open` | A matching pull request is open, or an open pull request's head is behind the local tip. Any open matching pull request takes precedence over closed or merged ones. | `keep` |
@@ -138,13 +138,13 @@ git-janitor then compares contents instead. A tip is `merged_same_tree` when, am
 
 1. is present locally. With `--no-fetch`, it may be missing.
 2. is in the default branch.
-3. has the identical tree as the local tip: the same tree object ID, so the same files with the same contents and modes, and the same submodule commits.
+3. has the same tree as the local tip: the same tree object ID, so the same files with the same contents and modes, and the same submodule commits.
 
 If several match, the highest-numbered one is reported. This check only replaces statuses whose verdict would otherwise be `review`: `pr_closed`, `merged_into_other_base`, `merged_plus_local`, and `no_pr`. It never overrides `pr_open`, `merged`, or `no_unique_commits`.
 
-`merged_same_tree` guarantees that the tip's contents are in the default branch's history, not that its commits are. Their messages, and changes that were added and then removed before the tip, may exist only locally. Squash merging gives those up anyway.
+`merged_same_tree` guarantees that the tip's contents are in the default branch's history, not that its commits are. Their messages and intermediate commits aren't protected.
 
-The trees must be identical. If any other commit reached the default branch between the rebase and the merge, the merge commit's tree includes it, and the branch stays at `review`. The same check covers a branch that merged the default branch after its pull request was merged, as long as the default branch was still at the merge commit when the branch merged it.
+The trees must be identical, so the default branch can't have any changes the local tip lacks. Merges of the pull requests below it in a stack are fine, since the tip already has their changes. A pull request that was rebased because the default branch moved never matches, and its branch stays at `review`. The same check covers a branch that merged the default branch after its pull request was merged, as long as the default branch was still at the merge commit when the branch merged it.
 
 #### Detached worktrees
 
@@ -295,10 +295,10 @@ git config --global --add janitor.disposable '.envrc'
   - `entries`: `precious_files`. Each entry has a `path`, ending in `/` for a directory, its `files` count, total `size` in bytes, and latest `modified` time.
   - `operation`: `in_progress_op`. One of `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`.
   - `min_age`: `recent_activity`, like `7d`.
-- `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit. They're newest first, whether or not they matched.
+- `evidence` holds the pull requests found for the branch name, or for a detached worktree, associated with its HEAD commit. They're newest first, whether or not they matched. `matched` means the pull request contains the local tip, as described in [What counts as merged](#what-counts-as-merged).
   - `merge_oid` is the pull request's merge commit, or `null` if it isn't merged.
   - When the local tip is beyond a pull request's head (`merged_plus_local`, or `pr_open` with unpushed commits), `evidence` also holds an `extra_commits` entry. It has that `pull_request` number and a `commits` list with the `sha` and `subject` of each commit beyond the head that isn't in the default branch, oldest first.
-  - When the status is `merged_same_tree`, `evidence` ends with a `same_tree` entry: `{"kind": "same_tree", "pull_request": 42, "merge_oid": "9a2b7e1..."}`. It has the number of the pull request whose merge commit has the local tip's tree, and that merge commit.
+  - When the status is `merged_same_tree`, `evidence` ends with a `same_tree` entry: `{"kind": "same_tree", "pull_request": 42, "merge_oid": "9a2b7e1..."}`. It has the number of the pull request whose merge commit has the local tip's tree, and that merge commit. That pull request decides the status, whatever its `matched` value.
 - `actions` lists, in order, what `clean` would do.
 - `last_activity` is an ISO 8601 time, or `null` if git has no record of activity.
 

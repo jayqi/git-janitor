@@ -191,7 +191,8 @@ class Sandbox:
 
     def rewrite_pr_head(self, number: int, *, onto: str | None = None) -> str:
         """Replace a pull request's head with a commit on its base that has the old head's tree,
-        as when GitHub or `gh stack` rebases and force-pushes a pull request.
+        as when GitHub or `gh stack` rebases and force-pushes a pull request. This only matches a
+        real rebase when the new base has nothing the old head lacks.
 
         `onto` rebases onto that branch instead of the pull request's base.
         """

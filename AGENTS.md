@@ -44,11 +44,11 @@ Modules:
 
 These are the reasons the tool exists. Don't weaken them without an explicit decision from the maintainer.
 
-They protect work, meaning the contents of branches and worktrees, not commits. Losing commit messages, intermediate commits, or the history of how a tip was reached is accepted when the tip's contents are in the default branch.
+They protect work, meaning what can't be recovered from GitHub: a branch's tip, and anything in a worktree beyond its branch's tip. How a branch got to its tip, such as its commit messages and intermediate commits, isn't protected.
 
 - A pull request only counts if one of these holds:
   - The local tip equals its head commit, or is an ancestor of the head that isn't already in the default branch.
-  - It was merged, its merge commit is in the default branch, and the local tip has the identical tree object ID as that merge commit. This guarantees that the tip's contents are in the default branch, not that its commits are.
+  - It was merged, its merge commit is in the default branch, and the local tip has the same tree object ID as that merge commit. This guarantees that the tip's contents are in the default branch's history, not that its commits are.
 
   Matching by branch name alone is never enough.
 - Only merges that reached the default branch count: the pull request's base is the default branch, or its merge commit is in the default branch. A same-tree match always requires the merge commit itself to be in the default branch.
