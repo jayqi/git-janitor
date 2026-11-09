@@ -158,7 +158,7 @@ Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades
 
 | Blocker | Meaning |
 |---|---|
-| `dirty` | The worktree has modified or staged tracked files. |
+| `dirty` | The worktree has modified or staged tracked files. This includes edited files marked `--skip-worktree` or `--assume-unchanged`, which `git status` doesn't show, and marked files that can't be compared with the index, such as symlinks. |
 | `untracked` | The worktree has untracked files that aren't ignored. A directory with nothing tracked in it is listed once, ending in `/`. |
 | `precious_files` | The worktree has ignored files that look like personal work (see [Precious ignored files](#precious-ignored-files)). |
 | `locked` | The worktree is locked with `git worktree lock`. A locked worktree whose directory is missing gets only this blocker. |

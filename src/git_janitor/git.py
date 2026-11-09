@@ -247,6 +247,41 @@ def worktree_status(cwd: Path) -> WorktreeStatus:
     )
 
 
+def skipped_changes(cwd: Path) -> list[str]:
+    """Tracked files that `git status` doesn't check, because they're marked skip-worktree or
+    assume-unchanged, and that may differ from the index.
+
+    Only regular files are compared with the index; anything else that exists counts as changed,
+    as do paths that can't be passed to `hash-object` safely.
+    """
+    entries = {}  # Path to index blob, for regular files
+    changed = []
+    for entry in run_git("ls-files", "-v", "-s", "-z", cwd=cwd).split("\0"):
+        if not entry or not (entry[0] == "S" or entry[0].islower()):
+            continue
+        info, path = entry.split("\t", 1)
+        _, mode, blob, _ = info.split(" ")
+        # hash-object reads paths one per line and unquotes those starting with `"`, and reading
+        # git's output as text turns `\r` into `\n`
+        if "\n" in path or path.startswith('"'):
+            changed.append(path)
+            continue
+        file = cwd / path
+        if not file.exists(follow_symlinks=False):
+            continue
+        # hash-object follows symlinks
+        if file.is_file(follow_symlinks=False) and mode in ("100644", "100755"):
+            entries[path] = blob
+        else:
+            changed.append(path)
+    if entries:
+        hashes = _lines(run_git("hash-object", "--stdin-paths", cwd=cwd, input="\n".join(entries)))
+        changed.extend(
+            path for (path, blob), oid in zip(entries.items(), hashes, strict=True) if blob != oid
+        )
+    return sorted(changed)
+
+
 def ignore_sources(paths: Sequence[str], cwd: Path) -> dict[str, str]:
     """Map each ignored path to the ignore file whose rule matched it."""
     # A `./` prefix stops check-ignore from reading paths like `:x` as pathspec magic
