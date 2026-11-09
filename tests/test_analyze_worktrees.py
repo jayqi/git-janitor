@@ -250,6 +250,35 @@ def test_edits_to_files_git_status_skips_are_dirty(sandbox, flag):
     assert blocker(candidate, DirtyBlocker).paths == ("file2.txt",)
 
 
+@pytest.mark.parametrize("name", ['"a"', "a\r"])
+def test_edits_to_skipped_files_with_unusual_names_are_dirty(sandbox, name):
+    path = sandbox.add_worktree("feat", create=True)
+    for file in (name, "a"):
+        (path / file).write_text("original\n")
+    sandbox.git("add", "--", name, "a", cwd=path)
+    sandbox.git("commit", "-m", "Add files", cwd=path)
+    sandbox.squash_merge(sandbox.open_pr("feat"))
+    sandbox.git("update-index", "--skip-worktree", "--", name, cwd=path)
+    (path / name).write_text("edited\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert blocker(candidate, DirtyBlocker)
+
+
+def test_dirty_paths_from_git_status_and_skipped_files_are_sorted(sandbox):
+    path, _ = sandbox.merged_worktree()
+    sandbox.git("update-index", "--skip-worktree", "file1.txt", cwd=path)
+    (path / "file1.txt").write_text("edited\n")
+    (path / "file2.txt").write_text("edited\n")
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    assert blocker(report.candidate("feat"), DirtyBlocker).paths == ("file1.txt", "file2.txt")
+
+
 @pytest.mark.parametrize("flag", ["--skip-worktree", "--assume-unchanged"])
 def test_unedited_files_git_status_skips_are_not_dirty(sandbox, flag):
     path, _ = sandbox.merged_worktree()

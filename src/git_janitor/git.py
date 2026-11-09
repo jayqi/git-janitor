@@ -251,7 +251,8 @@ def skipped_changes(cwd: Path) -> list[str]:
     """Tracked files that `git status` doesn't check, because they're marked skip-worktree or
     assume-unchanged, and that may differ from the index.
 
-    Only regular files are compared with the index; anything else that exists counts as changed.
+    Only regular files are compared with the index; anything else that exists counts as changed,
+    as do paths that can't be passed to `hash-object` safely.
     """
     entries = {}  # Path to index blob, for regular files
     changed = []
@@ -260,12 +261,16 @@ def skipped_changes(cwd: Path) -> list[str]:
             continue
         info, path = entry.split("\t", 1)
         _, mode, blob, _ = info.split(" ")
+        # hash-object reads paths one per line and unquotes those starting with `"`, and reading
+        # git's output as text turns `\r` into `\n`
+        if "\n" in path or path.startswith('"'):
+            changed.append(path)
+            continue
         file = cwd / path
         if not file.exists(follow_symlinks=False):
             continue
-        # hash-object follows symlinks and reads paths one per line
-        regular = file.is_file(follow_symlinks=False) and mode in ("100644", "100755")
-        if regular and "\n" not in path:
+        # hash-object follows symlinks
+        if file.is_file(follow_symlinks=False) and mode in ("100644", "100755"):
             entries[path] = blob
         else:
             changed.append(path)
