@@ -27,6 +27,7 @@ from git_janitor.model import (
     Report,
     SameTree,
     Status,
+    SubmodulesBlocker,
     UnreadableBlocker,
     UntrackedBlocker,
     Worktree,
@@ -233,6 +234,9 @@ def _worktree_blockers(worktree: Worktree, cwd: Path) -> tuple[Blocker, ...]:
         blockers.append(DirtyBlocker(paths=changed))
     if status.untracked:
         blockers.append(UntrackedBlocker(paths=status.untracked))
+    submodules = git.populated_submodules(worktree.path)
+    if submodules or git.has_submodule_git_dirs(worktree.path):
+        blockers.append(SubmodulesBlocker(paths=tuple(submodules)))
     scan = scan_ignored(worktree.path, status.ignored)
     if scan.nested_repositories:
         blockers.append(NestedRepositoryBlocker(paths=scan.nested_repositories))

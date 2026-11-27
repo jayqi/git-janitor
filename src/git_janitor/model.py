@@ -135,6 +135,7 @@ class BlockerCode(StrEnum):
     IN_PROGRESS_OP = "in_progress_op"
     IS_CURRENT = "is_current"
     IS_MAIN = "is_main"
+    SUBMODULES = "submodules"
     NESTED_REPOSITORY = "nested_repository"
     UNREADABLE = "unreadable"
     RECENT_ACTIVITY = "recent_activity"
@@ -201,6 +202,23 @@ class IsMainBlocker:
 
 
 @dataclass(frozen=True, slots=True)
+class SubmodulesBlocker:
+    """`git worktree remove` refuses worktrees with populated submodules, or with submodule git
+    directories in the worktree's git directory.
+    """
+
+    code: ClassVar[BlockerCode] = BlockerCode.SUBMODULES
+    paths: tuple[str, ...]
+    """Populated submodules. Empty when only submodule git directories remain."""
+
+    @property
+    def detail(self) -> str:
+        if self.paths:
+            return f"{len(self.paths)} initialized submodules"
+        return "the worktree's git directory has submodule repositories"
+
+
+@dataclass(frozen=True, slots=True)
 class NestedRepositoryBlocker:
     code: ClassVar[BlockerCode] = BlockerCode.NESTED_REPOSITORY
     paths: tuple[str, ...]
@@ -248,6 +266,7 @@ type Blocker = (
     | InProgressOpBlocker
     | IsCurrentBlocker
     | IsMainBlocker
+    | SubmodulesBlocker
     | NestedRepositoryBlocker
     | UnreadableBlocker
     | RecentActivityBlocker

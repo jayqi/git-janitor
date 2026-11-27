@@ -20,6 +20,7 @@ from git_janitor.model import (
     RemoveWorktree,
     Report,
     SameTree,
+    SubmodulesBlocker,
     TargetOutcome,
     UnreadableBlocker,
     UntrackedBlocker,
@@ -84,6 +85,7 @@ def blocker_to_dict(blocker: Blocker) -> dict[str, Any]:
         case (
             DirtyBlocker(paths=paths)
             | UntrackedBlocker(paths=paths)
+            | SubmodulesBlocker(paths=paths)
             | NestedRepositoryBlocker(paths=paths)
             | UnreadableBlocker(paths=paths)
         ):

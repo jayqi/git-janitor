@@ -165,6 +165,7 @@ Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
 | `is_current` | The directory git-janitor runs in is inside the worktree. With `git -C <path>`, that's `<path>`, not your shell's current directory. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
+| `submodules` | The worktree has initialized submodules, or its git directory still holds submodule repositories after they were deinitialized. `git worktree remove` refuses these worktrees without `--force`, and the submodules' own branches, stashes, and ignored files aren't checked. `paths` lists the initialized ones. |
 | `nested_repository` | A git repository is inside a precious ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
 | `recent_activity` | A `no_unique_commits` worktree, which an agent may have just created, was active within `janitor.minAge` (see [Activity](#activity)), or has no recorded activity. |
@@ -291,7 +292,7 @@ git config --global --add janitor.disposable '.envrc'
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
 - `blockers` are objects with a `code` from the [blockers table](#blockers) and a human-readable `detail`. Some have more fields:
-  - `paths`, relative to the worktree: `dirty`, `untracked`, `nested_repository`, and `unreadable`.
+  - `paths`, relative to the worktree: `dirty`, `untracked`, `submodules`, `nested_repository`, and `unreadable`.
   - `entries`: `precious_files`. Each entry has a `path`, ending in `/` for a directory, its `files` count, total `size` in bytes, and latest `modified` time.
   - `operation`: `in_progress_op`. One of `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`.
   - `min_age`: `recent_activity`, like `7d`.

@@ -19,6 +19,7 @@ from git_janitor.model import (
     RecentActivityBlocker,
     RemoveWorktree,
     Status,
+    SubmodulesBlocker,
     UntrackedBlocker,
     Verdict,
 )
@@ -355,6 +356,42 @@ def test_cache_directories_are_disposable(sandbox, global_excludes):
 
     entries = blocker(report.candidate("feat"), PreciousFilesBlocker).entries
     assert [(e.path, e.files) for e in entries] == [(".plans/", 1)]
+
+
+def test_worktree_with_initialized_submodule_needs_review(sandbox):
+    sandbox.add_submodule("libs/sub")
+    path, _ = sandbox.merged_worktree()
+    sandbox.init_submodules(path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (SubmodulesBlocker(paths=("libs/sub",)),)
+
+
+def test_worktree_with_uninitialized_submodule_is_deletable(sandbox):
+    sandbox.add_submodule()
+    sandbox.merged_worktree()
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.blockers == ()
+    assert candidate.verdict is Verdict.DELETE
+
+
+def test_worktree_with_deinitialized_submodule_needs_review(sandbox):
+    sandbox.add_submodule()
+    path, _ = sandbox.merged_worktree()
+    sandbox.init_submodules(path)
+    sandbox.git("submodule", "deinit", "-q", "--all", cwd=path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (SubmodulesBlocker(paths=()),)
 
 
 def test_repository_nested_in_precious_directory_is_reported_once(sandbox, global_excludes):

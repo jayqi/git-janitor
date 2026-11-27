@@ -130,6 +130,20 @@ class Sandbox:
     def push(self, branch: str) -> None:
         self.git("push", "-q", "-u", "origin", branch)
 
+    def add_submodule(self, path: str = "sub") -> None:
+        """Commit a submodule at `path` to main and push it."""
+        upstream = self.root / f"{path}-upstream"
+        run_git("init", "-q", str(upstream), cwd=self.root)
+        run_git("commit", "-q", "--allow-empty", "-m", "Initial commit", cwd=upstream)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(upstream), path)
+        self.git("commit", "-q", "-m", f"Add submodule {path}")
+        self.git("push", "-q", "origin", "main")
+
+    def init_submodules(self, cwd: Path) -> None:
+        self.git(
+            "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init", cwd=cwd
+        )
+
     def _associate_pr_commits(self, number: int) -> None:
         """Associate a pull request's own commits with it, as GitHub does."""
         pr = self.github.get(number)
