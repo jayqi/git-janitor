@@ -165,7 +165,7 @@ Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
 | `is_current` | The directory git-janitor runs in is inside the worktree. With `git -C <path>`, that's `<path>`, not your shell's current directory. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
-| `submodules` | The worktree has initialized submodules, or its git directory still holds submodule repositories after they were deinitialized. `git worktree remove` refuses these worktrees without `--force`, and the submodules' own branches, stashes, and ignored files aren't checked. `paths` lists the initialized ones. |
+| `submodules` | The worktree has initialized submodules, or its git directory still holds submodule repositories after they were deinitialized. `paths` lists the initialized ones. See [Worktrees with submodules](#worktrees-with-submodules). |
 | `nested_repository` | A git repository is inside a precious ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
 | `recent_activity` | A `no_unique_commits` worktree, which an agent may have just created, was active within `janitor.minAge` (see [Activity](#activity)), or has no recorded activity. |
@@ -212,12 +212,35 @@ To mark more patterns as disposable, use `janitor.disposable`. See [Configuratio
 `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them.
 
 - Only two blockers can be accepted: `precious_files`, whose contents git-janitor lists, and `recent_activity`, which only protects worktrees that may be in use.
-- For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first.
+- For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. For `submodules`, see [Worktrees with submodules](#worktrees-with-submodules).
 - `--accept` can't be combined with `--all`.
 - Outcomes list the accepted blockers in full in `accepted`, with the same fields as in the report, and keep the candidate's own `verdict`.
 
 > [!WARNING]
 > Accepting `precious_files` covers whatever precious files exist when `clean` runs, including ones added since the report you reviewed.
+
+### Worktrees with submodules
+
+git-janitor can't remove a worktree with the `submodules` blocker, because `git worktree remove` refuses it without `--force`. Removing it deletes the submodules' repositories too, and git-janitor doesn't check inside them.
+
+If you only update the submodules to upstream commits, there's nothing in them to lose. If you work inside them, check them first for commits that aren't on the submodule's remote, stashes, and changed, untracked, or ignored files. These commands, run in the worktree, list them:
+
+```sh
+git submodule foreach -q --recursive 'git fetch -q && git log --oneline --all --reflog --not --remotes'
+git submodule foreach -q --recursive 'git stash list'
+git submodule foreach -q --recursive 'git status --porcelain --ignored=matching --untracked-files=all'
+```
+
+If the blocker's `paths` is empty, the submodules were deinitialized. Their files are gone, but their repositories can still hold commits and stashes. Run `git submodule update --init --recursive` first so these commands cover them.
+
+To remove the worktree, run these in it, then run `git janitor clean <target>` from outside it:
+
+```sh
+rm -rf <path> && mkdir <path>   # for each initialized submodule
+rm -rf "$(git rev-parse --absolute-git-dir)/modules"
+```
+
+These leave the submodules as if they were never initialized. Don't use `git submodule deinit` in place of the first command. In a linked worktree, it removes the submodule's settings from the repository's shared config, which deinitializes it in every worktree.
 
 ## Configuration
 
