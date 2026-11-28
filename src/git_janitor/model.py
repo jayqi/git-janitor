@@ -203,18 +203,18 @@ class IsMainBlocker:
 
 @dataclass(frozen=True, slots=True)
 class SubmodulesBlocker:
-    """`git worktree remove` refuses worktrees with populated submodules, or with submodule git
+    """`git worktree remove` refuses worktrees with checked-out submodules, or with submodule git
     directories in the worktree's git directory.
     """
 
     code: ClassVar[BlockerCode] = BlockerCode.SUBMODULES
     paths: tuple[str, ...]
-    """Populated submodules. Empty when only submodule git directories remain."""
+    """Checked-out submodules. Empty when only submodule git directories remain."""
 
     @property
     def detail(self) -> str:
         if self.paths:
-            return f"{len(self.paths)} initialized submodules"
+            return f"{len(self.paths)} checked-out submodules"
         return "the worktree's git directory has submodule repositories"
 
 

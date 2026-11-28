@@ -296,11 +296,18 @@ def populated_submodules(cwd: Path) -> list[str]:
     return sorted(paths)
 
 
-def has_submodule_git_dirs(cwd: Path) -> bool:
+def has_submodule_git_dirs(worktree: Worktree) -> bool:
     """Whether the worktree's git directory has a `modules` directory, which holds the git
     directories of its submodules.
+
+    A linked worktree's is read from its admin directory, so it works when the worktree's
+    directory is missing.
     """
-    git_dir = Path(run_git("rev-parse", "--absolute-git-dir", cwd=cwd).strip())
+    git_dir = worktree.admin_dir
+    if git_dir is None:
+        if not worktree.path.exists():
+            raise ValueError(f"git directory not found for worktree {worktree.path}")
+        git_dir = Path(run_git("rev-parse", "--absolute-git-dir", cwd=worktree.path).strip())
     return (git_dir / "modules").is_dir()
 
 

@@ -485,7 +485,7 @@ def test_report_json_submodules_blockers(in_sandbox):
     candidates = report_json("initialized", "deinitialized")["candidates"]
 
     assert [c["blockers"] for c in candidates] == [
-        [{"code": "submodules", "detail": "1 initialized submodules", "paths": ["sub"]}],
+        [{"code": "submodules", "detail": "1 checked-out submodules", "paths": ["sub"]}],
         [
             {
                 "code": "submodules",

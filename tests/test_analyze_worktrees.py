@@ -394,6 +394,31 @@ def test_worktree_with_deinitialized_submodule_needs_review(sandbox):
     assert candidate.blockers == (SubmodulesBlocker(paths=()),)
 
 
+def test_worktree_with_submodule_repository_in_its_directory_needs_review(sandbox):
+    sandbox.add_submodule()
+    path, _ = sandbox.merged_worktree()
+    sandbox.git("clone", "-q", str(sandbox.root / "sub-upstream"), str(path / "sub"))
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (SubmodulesBlocker(paths=("sub",)),)
+
+
+def test_worktree_with_missing_directory_and_submodule_repositories_needs_review(sandbox):
+    sandbox.add_submodule()
+    path, _ = sandbox.merged_worktree()
+    sandbox.init_submodules(path)
+    shutil.rmtree(path)
+
+    report = analyze(sandbox.repo, sandbox.github)
+
+    candidate = report.candidate("feat")
+    assert candidate.verdict is Verdict.REVIEW
+    assert candidate.blockers == (SubmodulesBlocker(paths=()),)
+
+
 def test_repository_nested_in_precious_directory_is_reported_once(sandbox, global_excludes):
     global_excludes.write_text(".plans/\n")
     path, _ = sandbox.merged_worktree()
