@@ -161,10 +161,11 @@ Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades
 | `dirty` | The worktree has modified or staged tracked files. This includes edited files marked `--skip-worktree` or `--assume-unchanged`, which `git status` doesn't show, and marked files that can't be compared with the index, such as symlinks. |
 | `untracked` | The worktree has untracked files that aren't ignored. A directory with nothing tracked in it is listed once, ending in `/`. |
 | `precious_files` | The worktree has ignored files that look like personal work (see [Precious ignored files](#precious-ignored-files)). |
-| `locked` | The worktree is locked with `git worktree lock`. A locked worktree whose directory is missing gets only this blocker. |
+| `locked` | The worktree is locked with `git worktree lock`. A worktree whose directory is missing can only get this blocker and `submodules`. |
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
 | `is_current` | The directory git-janitor runs in is inside the worktree. With `git -C <path>`, that's `<path>`, not your shell's current directory. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
+| `submodules` | The worktree has or previously had checked-out submodules, whose repositories are still in its git directory. `paths` lists the ones checked out now. See [Worktrees with submodules](#worktrees-with-submodules). |
 | `nested_repository` | A git repository is inside a precious ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
 | `recent_activity` | A `no_unique_commits` worktree, which an agent may have just created, was active within `janitor.minAge` (see [Activity](#activity)), or has no recorded activity. |
@@ -211,12 +212,29 @@ To mark more patterns as disposable, use `janitor.disposable`. See [Configuratio
 `--accept <codes>` ignores the listed blockers for explicitly named targets, after you or an agent have reviewed them.
 
 - Only two blockers can be accepted: `precious_files`, whose contents git-janitor lists, and `recent_activity`, which only protects worktrees that may be in use.
-- For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first.
+- For other blockers, such as `dirty`, `untracked`, or `nested_repository`, move, commit, or delete what they report first. For `submodules`, see [Worktrees with submodules](#worktrees-with-submodules).
 - `--accept` can't be combined with `--all`.
 - Outcomes list the accepted blockers in full in `accepted`, with the same fields as in the report, and keep the candidate's own `verdict`.
 
 > [!WARNING]
 > Accepting `precious_files` covers whatever precious files exist when `clean` runs, including ones added since the report you reviewed.
+
+### Worktrees with submodules
+
+git-janitor can't remove a worktree that has or previously had checked-out submodules, because `git worktree remove` refuses it without `--force`. A submodule's repository stays in the worktree's git directory even after the submodule is deinitialized. Removing the worktree deletes those repositories, and git-janitor doesn't check inside them.
+
+If you only update the submodules to upstream commits, there's nothing in them to lose. If you committed, stashed, or changed files inside a submodule in this worktree, push or move that work first.
+
+To remove the worktree, run these from its top-level directory, then run `git janitor clean <target>` from outside it:
+
+```sh
+rm -rf <path> && mkdir <path>   # for each of the blocker's paths
+rm -rf "$(git rev-parse --absolute-git-dir)/modules"
+```
+
+If the worktree's directory is missing, delete `worktrees/<id>/modules` in the repository's git directory instead, where `<id>` is usually the name of the worktree's directory.
+
+Don't use `git submodule deinit` in place of the first command. In a linked worktree, it also removes the submodule's settings from the repository's shared config, which unregisters the submodule for every worktree.
 
 ## Configuration
 
@@ -291,7 +309,7 @@ git config --global --add janitor.disposable '.envrc'
 - `id` is the branch name, or the worktree path for a detached worktree. Pass it to `report` or `clean` as a target.
 - `branch` or `worktree` is `null` when the candidate doesn't have one.
 - `blockers` are objects with a `code` from the [blockers table](#blockers) and a human-readable `detail`. Some have more fields:
-  - `paths`, relative to the worktree: `dirty`, `untracked`, `nested_repository`, and `unreadable`.
+  - `paths`, relative to the worktree: `dirty`, `untracked`, `submodules`, `nested_repository`, and `unreadable`.
   - `entries`: `precious_files`. Each entry has a `path`, ending in `/` for a directory, its `files` count, total `size` in bytes, and latest `modified` time.
   - `operation`: `in_progress_op`. One of `merge`, `rebase`, `cherry-pick`, `revert`, or `bisect`.
   - `min_age`: `recent_activity`, like `7d`.
@@ -334,7 +352,7 @@ git config --global --add janitor.disposable '.envrc'
 
 `actions` are the candidate's planned actions. `recovery` covers only the actions that were carried out, or would be with `--dry-run`.
 
-`schema_version` increases whenever the shape of either output changes incompatibly. New `status` values and evidence kinds don't count as incompatible, so accept ones you don't recognize.
+`schema_version` increases whenever the shape of either output changes incompatibly. New `status` values, evidence kinds, and blocker codes don't count as incompatible, so accept ones you don't recognize.
 
 ## Exit codes
 

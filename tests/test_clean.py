@@ -43,6 +43,16 @@ def test_clean_removes_worktree_with_disposable_ignored_files(sandbox):
     assert not path.exists()
 
 
+def test_clean_removes_worktree_with_uninitialized_submodule(sandbox):
+    sandbox.add_submodule()
+    path, _ = sandbox.merged_worktree()
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    assert result.outcomes[0].outcome is Outcome.DELETED
+    assert not path.exists()
+
+
 def test_clean_accepts_worktree_path_as_target(sandbox):
     path, _ = sandbox.merged_worktree()
 
@@ -142,6 +152,22 @@ def test_clean_keeps_worktree_that_gained_precious_files(sandbox, global_exclude
     assert outcome.outcome is Outcome.FAILED
     assert "precious_files" in outcome.detail
     assert (path / ".plans" / "plan.md").exists()
+
+
+def test_clean_keeps_worktree_whose_submodule_was_initialized_after_analysis(
+    sandbox, after_analysis
+):
+    sandbox.add_submodule()
+    path, _ = sandbox.merged_worktree()
+    after_analysis(lambda: sandbox.init_submodules(path))
+
+    result = clean(sandbox.repo, sandbox.github, targets=["feat"])
+
+    [outcome] = result.outcomes
+    assert outcome.outcome is Outcome.FAILED
+    assert "has new blockers: submodules" in outcome.detail
+    assert path.exists()
+    assert "feat" in local_branches(sandbox)
 
 
 def test_clean_keeps_branch_checked_out_after_analysis(sandbox, after_analysis):

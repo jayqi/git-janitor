@@ -474,6 +474,28 @@ def test_report_json_nested_repository_and_unreadable_blockers(
     ]
 
 
+def test_report_json_submodules_blockers(in_sandbox):
+    in_sandbox.add_submodule()
+    initialized, _ = in_sandbox.merged_worktree("initialized")
+    in_sandbox.init_submodules(initialized)
+    deinitialized, _ = in_sandbox.merged_worktree("deinitialized")
+    in_sandbox.init_submodules(deinitialized)
+    in_sandbox.git("submodule", "deinit", "-q", "--all", cwd=deinitialized)
+
+    candidates = report_json("initialized", "deinitialized")["candidates"]
+
+    assert [c["blockers"] for c in candidates] == [
+        [{"code": "submodules", "detail": "1 checked-out submodules", "paths": ["sub"]}],
+        [
+            {
+                "code": "submodules",
+                "detail": "the worktree's git directory has submodule repositories",
+                "paths": [],
+            }
+        ],
+    ]
+
+
 def test_report_json_branch_missing_worktree(in_sandbox):
     path = in_sandbox.root / "wt-orphan"
     in_sandbox.git("worktree", "add", "-q", "--orphan", "-b", "newthing", str(path))
