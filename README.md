@@ -165,7 +165,7 @@ Blockers are reasons a worktree shouldn't be removed yet. Any blocker downgrades
 | `in_progress_op` | A rebase, merge, cherry-pick, revert, or bisect is in progress in the worktree. |
 | `is_current` | The directory git-janitor runs in is inside the worktree. With `git -C <path>`, that's `<path>`, not your shell's current directory. |
 | `is_main` | The branch is checked out in the main worktree, which is never removed. |
-| `submodules` | The worktree has checked-out submodules, or its git directory holds submodule repositories, such as after they were deinitialized. `paths` lists the checked-out ones. See [Worktrees with submodules](#worktrees-with-submodules). |
+| `submodules` | The worktree has or previously had checked-out submodules, whose repositories are still in its git directory. `paths` lists the ones checked out now. See [Worktrees with submodules](#worktrees-with-submodules). |
 | `nested_repository` | A git repository is inside a precious ignored directory. |
 | `unreadable` | Some ignored paths couldn't be read, so git-janitor can't tell whether they're precious. |
 | `recent_activity` | A `no_unique_commits` worktree, which an agent may have just created, was active within `janitor.minAge` (see [Activity](#activity)), or has no recorded activity. |
@@ -221,7 +221,7 @@ To mark more patterns as disposable, use `janitor.disposable`. See [Configuratio
 
 ### Worktrees with submodules
 
-git-janitor can't remove a worktree with the `submodules` blocker, because `git worktree remove` refuses it without `--force`. Removing the worktree deletes its submodules' repositories, and git-janitor doesn't check inside them.
+git-janitor can't remove a worktree that has or previously had checked-out submodules, because `git worktree remove` refuses it without `--force`. A submodule's repository stays in the worktree's git directory even after the submodule is deinitialized. Removing the worktree deletes those repositories, and git-janitor doesn't check inside them.
 
 If you only update the submodules to upstream commits, there's nothing in them to lose. If you committed, stashed, or changed files inside a submodule in this worktree, push or move that work first.
 
